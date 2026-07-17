@@ -342,7 +342,12 @@ async def intelligence_scanner():
                 continue
 
             # يمكنك إضافة (elif) إضافية لأي استراتيجيات أخرى...
-            
+    except Exception as e: 
+        import logging 
+        logging.error(f"❌ خطأ داخلي دالة الاستراتجيات: {e}")
+
+    print("✅ تم الانتهاء من المسح الاستراتجيات بنجاح.")
+
 async def execute_trade(user_id, coin_name, trade_type, entry_price, strategy_id, strategy_name, used_amount=0.5, leverage=50):
     """
     دالة فتح الصفقة بدقة بينانس:
