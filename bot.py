@@ -43,6 +43,9 @@ API_TOKEN = os.getenv('BOT_TOKEN')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 GROUP_ID = os.getenv('GROUP_ID')
+tell_1 = os.getenv('tell_1')
+tell_2 = os.getenv('tell_2')
+
 
 # 2. التحقق ثانياً
 if not API_TOKEN or not GROUP_ID:
@@ -348,6 +351,31 @@ async def intelligence_scanner():
 
     print("✅ تم الانتهاء من المسح الاستراتجيات بنجاح.")
 
+# بما أن API_TOKEN معرف عالمياً في بداية ملفك، استخدمه مباشرة
+async def send_telegram_notification(text: str, chat_id: str):
+    # نستخدم المتغير الذي عرفته أنت في بداية الملف مباشرة
+    global API_TOKEN 
+    
+    if not API_TOKEN or not chat_id:
+        logging.warning("⚠️ لم يتم إرسال الإشعار: تأكد من إعداد API_TOKEN و chat_id")
+        return
+
+    url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as response:
+                if response.status != 200:
+                    logging.error(f"❌ فشل إرسال إشعار تليجرام: {await response.text()}")
+    except Exception as e:
+        logging.error(f"❌ خطأ أثناء الاتصال بتليجرام: {e}")
+        
+
 async def execute_trade(user_id, coin_name, trade_type, entry_price, strategy_id, strategy_name, used_amount=0.5, leverage=50):
     """
     دالة فتح الصفقة بدقة بينانس:
@@ -360,7 +388,6 @@ async def execute_trade(user_id, coin_name, trade_type, entry_price, strategy_id
         # ==========================================
         # 0. التحقق الصارم: هل العملة نشطة في أي استراتيجية أخرى لنفس اللاعب؟
         # ==========================================
-        # لاحظ هنا: شلنا eq("strategy_id", strategy_id) عشان الفحص يكون شامل لكل الاستراتيجيات
         active_check = supabase.table("active_trades").select("id").eq("user_id", str(user_id)).eq("coin_name", coin_name).eq("status", "نشطة").execute()
         
         if active_check.data:
@@ -462,7 +489,7 @@ async def execute_trade(user_id, coin_name, trade_type, entry_price, strategy_id
         print(f"💰 تم خصم {round(total_cost, 4)}$ من المحفظة. الرصيد المتبقي: {round(new_balance, 4)}$")
 
         # ==========================================
-        # 5. إدراج الصفقة في جدول الصفقات النشطة
+        # 5. إدراج الصفقة في جدول الصفقات النشطة وإرسال الإشعار
         # ==========================================
         trade_data = {
             "user_id": str(user_id),
@@ -493,6 +520,37 @@ async def execute_trade(user_id, coin_name, trade_type, entry_price, strategy_id
         if insert_res.data:
             print(f"✅ تم فتح صفقة {trade_type} لـ {coin_name} بنجاح.")
             print(f"📉 منطقة الدعم (-0.5$): {round(support_zone, 6)} | 🛑 الوقف (-1.0$): {round(stop_loss, 6)}")
+            
+            # ------------------------------------------
+            # تجهيز رسالة الإشعار وإرسالها للتليجرام
+            # ------------------------------------------
+            trade_icon = "🟢" if trade_type_upper in ["LONG", "شراء"] else "🔴"
+            trade_label = "شراء" if trade_type_upper in ["LONG", "شراء"] else "بيع"
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            notification_msg = (
+                "ــــــــــــــــــــــــــــــــــــ\n\n"
+                f"{trade_icon} نوع الصفقة : {trade_label}\n"
+                f"🎯 إسم الإستراتيجية : {strategy_name}\n"
+                f"🔢 رقم الاستراتجية : {strategy_id}\n"
+                f"💸 إسم العملة : #{coin_name}\n"
+                f"🔄 الرافعة المالية : {leverage}\n"
+                f"💳 الكمية : {round(coin_shares, 4)}\n"
+                f"📊 المبلغ : {round(used_amount, 2)}\n"
+                f"🧾 الإقتراض : {round(borrowed_amount, 2)}\n"
+                f"📈 سعر الدخول : {round(entry_price, 6)}\n"
+                f"⁦🔼 منطقة الدعم : {round(support_zone, 6)}\n"
+                f"🚫 وقف الخسارة : {round(stop_loss, 6)}\n"
+                f"🥇 الهدف الاول : {round(target_1, 6)}\n"
+                f"🥈 الهدف الثاني : {round(target_2, 6)}\n"
+                f"🥉 الهدف الثالث : {round(target_3, 6)}\n"
+                f"🕛 وقت فتح الصفقة: {current_time}\n\n"
+                "ــــــــــــــــــــــــــــــــــــ"
+            )
+            
+            # بدلاً من استدعاء الدالة بدون معرف، مرر لها tell_2
+            await send_telegram_notification(notification_msg, tell_1)
+            
             return True
         else:
             # إعادة الرصيد في حال فشل إدراج الصفقة (Rollback)
@@ -505,6 +563,10 @@ async def execute_trade(user_id, coin_name, trade_type, entry_price, strategy_id
         return False
         
 
+
+# =======================================================
+# دالة مراقبة الصفقات
+# =======================================================
 async def monitor_active_trades(supabase):
     """
     دالة مراقبة الصفقات النشطة.
@@ -512,26 +574,20 @@ async def monitor_active_trades(supabase):
     لتوفير استهلاك المعالج وتوحيد مصدر البيانات.
     """
     try:
-        # =======================================================
         # 0. جلب الأسعار الحية من قاعدة البيانات أولاً (طلب واحد فقط)
-        # =======================================================
         prices_res = supabase.table("crypto_market_simulation_u").select("symbol, current_price").execute()
         
         if not prices_res.data:
             logging.warning("⚠️ لم يتم العثور على أسعار في جدول crypto_market_simulation_u")
             return
             
-        # تحويل النتيجة إلى قاموس لتسريع عملية البحث داخل الـ Loop
-        # الشكل الناتج: {"BTCUSDT": 64000.5, "ETHUSDT": 3500.0, ...}
         current_prices_dict = {
             row['symbol']: float(row['current_price']) 
             for row in prices_res.data 
             if row.get('current_price') is not None
         }
 
-        # =======================================================
         # 1. جلب جميع الصفقات النشطة
-        # =======================================================
         res = supabase.table("active_trades").select("*").eq("status", "نشطة").execute()
         active_trades = res.data
 
@@ -542,7 +598,6 @@ async def monitor_active_trades(supabase):
             trade_id = trade['id']
             coin_name = trade['coin_name']
             
-            # التحقق مما إذا كان السعر متوفراً في القاموس الذي جلبناه
             if coin_name not in current_prices_dict:
                 continue
                 
@@ -550,7 +605,6 @@ async def monitor_active_trades(supabase):
             trade_type = trade['trade_type'].upper()
             is_long = trade_type in ["LONG", "شراء"]
             
-            # استخراج بيانات الصفقة الحالية
             user_id = str(trade['user_id'])
             strategy_id = int(trade['strategy_id'])
             
@@ -575,24 +629,18 @@ async def monitor_active_trades(supabase):
             if current_price > highest: updates['highest_price_reached'] = current_price
             if current_price < lowest: updates['lowest_price_reached'] = current_price
 
-            # =======================================================
-            # 1. مراقبة وقف الخسارة الصارم (SL)
-            # =======================================================
+            # مراقبة وقف الخسارة الصارم (SL)
             if is_long and current_price <= stop_loss:
                 close_trade, close_reason = True, "ضرب وقف الخسارة (SL)"
             elif not is_long and current_price >= stop_loss:
                 close_trade, close_reason = True, "ضرب وقف الخسارة (SL)"
 
             if not close_trade:
-                # =======================================================
-                # 2. نظام التعزيز (DCA) عند ملامسة الدعم
-                # =======================================================
+                # نظام التعزيز (DCA) عند ملامسة الدعم
                 if support_zone > 0: 
                     hit_support = (is_long and current_price <= support_zone) or (not is_long and current_price >= support_zone)
-                    
                     if hit_support:
                         port_res = supabase.table("portfolio").select("id, current_balance").eq("player_name", user_id).eq("strategy_id", strategy_id).execute()
-                        
                         if port_res.data:
                             port_id = port_res.data[0]['id']
                             current_bal = float(port_res.data[0]['current_balance'])
@@ -618,18 +666,14 @@ async def monitor_active_trades(supabase):
                                 entry_price, used_amount, coin_shares = new_entry_price, total_used, total_shares
                                 logging.info(f"🔄 تعزيز ناجح للصفقة {trade_id}. تم خصم {round(total_dca_cost, 4)}$ من المحفظة.")
                             else:
-                                logging.warning(f"⚠️ رصيد المحفظة لا يكفي لتعزيز صفقة {trade_id}. الرصيد: {current_bal}$")
+                                logging.warning(f"⚠️ رصيد المحفظة لا يكفي لتعزيز صفقة {trade_id}.")
                                 updates['support_zone'] = -2 
 
-                # =======================================================
-                # 3. نظام تخفيف المخاطرة
-                # =======================================================
+                # نظام تخفيف المخاطرة
                 elif support_zone == -1: 
                     in_profit = (is_long and current_price > entry_price) or (not is_long and current_price < entry_price)
-                    
                     if in_profit:
                         port_res = supabase.table("portfolio").select("id, current_balance").eq("player_name", user_id).eq("strategy_id", strategy_id).execute()
-                        
                         if port_res.data:
                             port_id = port_res.data[0]['id']
                             current_bal = float(port_res.data[0]['current_balance'])
@@ -658,9 +702,7 @@ async def monitor_active_trades(supabase):
                             used_amount, coin_shares = released_margin, half_shares
                             logging.info(f"🛡️ تخفيف مخاطرة للصفقة {trade_id}. إرجاع {round(return_to_wallet, 4)}$ للمحفظة.")
 
-                # =======================================================
-                # 4. تتبع الأرباح المتدرج (Trailing Stop)
-                # =======================================================
+                # تتبع الأرباح المتدرج (Trailing Stop)
                 if is_long:
                     if current_price >= target_3:
                         close_trade, close_reason = True, "تحقيق الهدف الأخير"
@@ -677,7 +719,7 @@ async def monitor_active_trades(supabase):
                         if stop_loss > entry_price: updates['stop_loss'] = entry_price
 
             # =======================================================
-            # 5. تنفيذ تحديثات قاعدة البيانات
+            # تنفيذ تحديثات قاعدة البيانات وإرسال الإشعار
             # =======================================================
             if close_trade:
                 if is_long:
@@ -688,8 +730,10 @@ async def monitor_active_trades(supabase):
                 closing_fee = (used_amount * leverage) * 0.0004
                 total_return_to_wallet = used_amount + pnl_value - closing_fee
                 pnl_percentage = (pnl_value / used_amount) * 100
+                net_pnl = pnl_value - closing_fee
 
                 port_res = supabase.table("portfolio").select("id, current_balance").eq("player_name", user_id).eq("strategy_id", strategy_id).execute()
+                current_bal = 0.0
                 if port_res.data:
                     port_id = port_res.data[0]['id']
                     current_bal = float(port_res.data[0]['current_balance'])
@@ -699,15 +743,81 @@ async def monitor_active_trades(supabase):
                     "status": "مغلقة",
                     "close_price": current_price,
                     "close_reason": close_reason,
-                    "realized_pnl": round(pnl_value - closing_fee, 4), 
+                    "realized_pnl": round(net_pnl, 4), 
                     "pnl_percentage": round(pnl_percentage, 2),
                     "closed_at": datetime.utcnow().isoformat()
                 }
                 close_updates.update(updates) 
                 
                 supabase.table("active_trades").update(close_updates).eq("id", trade_id).execute()
-                print(f"🏁 إغلاق صفقة {coin_name} (ID: {trade_id}). السبب: {close_reason}. العائد للمحفظة: {round(total_return_to_wallet, 4)}$")
-            
+                print(f"🏁 إغلاق صفقة {coin_name} (ID: {trade_id}). السبب: {close_reason}. العائد: {round(total_return_to_wallet, 4)}$")
+                # ---------------------------------------------------
+                # تجهيز وإرسال إشعار التليجرام
+                # ---------------------------------------------------
+                trade_icon = "🟢" if is_long else "🔴"
+                trade_type_str = "شراء (LONG)" if is_long else "بيع (SHORT)"
+                
+                # حساب الوقت المستغرق
+                created_at_str = trade.get('created_at')
+                time_spent_str = "غير معروف"
+                if created_at_str:
+                    try:
+                        created_dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                        if created_dt.tzinfo is None:
+                            created_dt = created_dt.replace(tzinfo=timezone.utc)
+                        time_spent = datetime.now(timezone.utc) - created_dt
+                        
+                        days = time_spent.days
+                        seconds = time_spent.seconds
+                        hours = seconds // 3600
+                        minutes = (seconds % 3600) // 60
+                        
+                        time_parts = []
+                        if days > 0: time_parts.append(f"{days} يوم")
+                        if hours > 0: time_parts.append(f"{hours} ساعة")
+                        if minutes > 0: time_parts.append(f"{minutes} دقيقة")
+                        if not time_parts: time_parts.append("أقل من دقيقة")
+                        
+                        time_spent_str = " و ".join(time_parts)
+                    except Exception as e:
+                        logging.error(f"خطأ في حساب الوقت للصفقة {trade_id}: {e}")
+
+                strategy_name = trade.get('strategy_name', 'غير محدد')
+                borrowed_amount = used_amount * leverage
+                updated_balance = current_bal + total_return_to_wallet
+
+                # ✅ بناء النص باستخدام قائمة لتجنب تشوه الكود وأخطاء المسافات البادئة
+                msg_lines = [
+                    "ــــــــــــــــــــــــــــــــــــ",
+                    "",
+                    f"{trade_icon} نوع الصفقة : {trade_type_str}",
+                    f"🎯 إسم الإستراتيجية : {strategy_name}",
+                    f"🔢 رقم الاستراتجية : {strategy_id}",
+                    f"💸 إسم العملة : #{coin_name}",
+                    f"🔄 الرافعة المالية : {leverage}x",
+                    f"💳 الكمية : {round(coin_shares, 4)}",
+                    f"📊 المبلغ : {round(used_amount, 2)}$",
+                    f"🧾 الإقتراض : {round(borrowed_amount, 2)}$",
+                    f"📈 سعر الدخول : {round(entry_price, 6)}",
+                    f"⁦📝 سعر الإغلاق : {round(current_price, 6)}",
+                    f"🔼 اقصى سعر : {round(highest, 6)}",
+                    f"🔽 أذنى سعر : {round(lowest, 6)}",
+                    f"💵 الربح او الخسارة : {round(net_pnl, 4)}$",
+                    f"🧾 النسبة المؤية : {round(pnl_percentage, 2)}%",
+                    f"🕛 الوقت المستغرق : {time_spent_str}",
+                    f"🤔 سبب الإغلاق : {close_reason}",
+                    f"💸 خصم رسوم الصفقة : {round(closing_fee, 4)}$",
+                    f"💳 رصيد المحفظة الاستراتجية : {round(updated_balance, 2)}$",
+                    "",
+                    "ــــــــــــــــــــــــــــــــــــ"
+                ]
+                
+                # دمج الأسطر مع فاصل سطر جديد
+                notification_msg = "\n".join(msg_lines)
+
+                # نمرر نص الرسالة ومعرف المجموعة tell_2
+                asyncio.create_task(send_telegram_notification(notification_msg, tell_2))
+   
             elif updates:
                 updates['current_price'] = current_price
                 
@@ -722,7 +832,7 @@ async def monitor_active_trades(supabase):
 
     except Exception as e:
         logging.error(f"❌ حدث خطأ في دالة مراقبة الصفقات: {e}")
-        
+           
 
 def generate_candle_chart(direction):
     """تمثيل مرئي بسيط لاتجاه الحركة الحالية"""
@@ -730,7 +840,6 @@ def generate_candle_chart(direction):
         return "📉 ⇠ |---🟩---|\n⇠ 🚀 صعود إيجابي"
     else:
         return "📈 ⇠ |---🟥---|\n⇠ 🩸 هبوط سلبي"
-
 
 # --- قسم دوال الكيبورد ---
 # ==========================================
@@ -752,8 +861,7 @@ def get_market_keyboard(user_id):
     markup.add(InlineKeyboardButton("📋 صفقاتي المفتوحة", callback_data=f"active_trades_view:{user_id}"))
 
     return markup
-
-    
+  
  # ==========================================
 # 3. قوالب واجهات المستخدم المصححة
 # ==========================================
