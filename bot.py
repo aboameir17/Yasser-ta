@@ -1313,23 +1313,255 @@ async def listener_market(message: types.Message):
 
     await message.answer(text, reply_markup=markup, parse_mode="HTML")
 
-    # --- 2. المستمع (الذي لا يستجيب) ---
+# دالة لتنسيق الأرقام لتعرض كاملة بدون أصفار زائدة وبدون صيغة علمية
+def format_num(num, decimals=8):
+    if num is None: return "0"
+    return f"{float(num):.{decimals}f}".rstrip('0').rstrip('.') if '.' in f"{float(num):.{decimals}f}" else f"{float(num):.{decimals}f}"
+
+# دالة جلب الصفقات من قاعدة البيانات بناءً على الفلتر
+async def fetch_filtered_trades(supabase, user_id, filter_type="active_profit", page=0, limit=10):
+    offset = page * limit
+    query = supabase.table("active_trades").select("*").eq("user_id", user_id)
+
+    if filter_type == "active_profit":
+        query = query.eq("status", "نشطة").order("pnl_percentage", desc=True)
+    elif filter_type == "active_loss":
+        query = query.eq("status", "نشطة").order("pnl_percentage", desc=False)
+    elif filter_type == "closed_win":
+        query = query.eq("status", "مغلقة").gt("realized_pnl", 0).order("closed_at", desc=True)
+    elif filter_type == "closed_loss":
+        query = query.eq("status", "مغلقة").lte("realized_pnl", 0).order("closed_at", desc=True)
+
+    # تنفيذ الاستعلام مع نظام الصفحات
+    res = query.range(offset, offset + limit - 1).execute()
+    
+    # التحقق من وجود صفحة تالية
+    next_page_check = query.range(offset + limit, offset + limit).execute()
+    has_next = len(next_page_check.data) > 0
+
+    return res.data, has_next
+    
+
+def get_trades_keyboard(trades, filter_type, page, has_next):
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    
+    # 1. أزرار الصفقات الـ 10
+    for trade in trades:
+        trade_id = trade['id']
+        coin = trade['coin_name']
+        pnl_perc = trade.get('pnl_percentage', 0.0)
+        trade_type = "🟢 LONG" if trade['trade_type'].upper() in ["LONG", "شراء"] else "🔴 SHORT"
+        
+        # تنسيق اسم الزر
+        btn_text = f"{trade_type} | #{coin} | {pnl_perc}%"
+        keyboard.add(InlineKeyboardButton(text=btn_text, callback_data=f"view_trade:{trade_id}"))
+
+    # 2. أزرار التنقل (السابق / التالي)
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⏪ السابق", callback_data=f"nav:{filter_type}:{page-1}"))
+    if has_next:
+        nav_buttons.append(InlineKeyboardButton(text="التالي ⏩", callback_data=f"nav:{filter_type}:{page+1}"))
+    if nav_buttons:
+        keyboard.row(*nav_buttons)
+
+    # 3. أزرار الفلترة الأساسية
+    keyboard.row(
+        InlineKeyboardButton(text="📈 نشطة (ربح)", callback_data="nav:active_profit:0"),
+        InlineKeyboardButton(text="📉 نشطة (خسارة)", callback_data="nav:active_loss:0")
+    )
+    keyboard.row(
+        InlineKeyboardButton(text="✅ مغلقة (ناجحة)", callback_data="nav:closed_win:0"),
+        InlineKeyboardButton(text="❌ مغلقة (فاشلة)", callback_data="nav:closed_loss:0")
+    )
+    
+    return keyboard
+
+
 @dp.message_handler(Text(equals=["صفقاتي", "الصفقات"], ignore_case=True), state="*")
 async def listener_trades(message: types.Message):
     user_id = int(message.from_user.id)
     try:
-        trades, text = await get_active_trades_report(user_id)
-        
+        # افتراضياً نعرض الصفقات النشطة الأكثر ربحاً (الصفحة 0)
+        filter_type = "active_profit"
+        page = 0
+        trades, has_next = await fetch_filtered_trades(supabase, user_id, filter_type, page)
+
         if not trades:
-            # تأكد أن دالة get_market_keyboard لا تحتوي على أخطاء أيضاً
-            return await message.answer(text, reply_markup=get_market_keyboard(user_id), parse_mode="HTML")
-        
-        # استدعاء الكيبورد المصحح
-        await message.answer(text, reply_markup=get_trades_keyboard(user_id, trades), parse_mode="HTML")
+            await message.answer("⚠️ لا توجد صفقات لعرضها حالياً في هذا القسم.", reply_markup=get_market_keyboard(user_id))
+            return
+
+        # نص الرسالة العلوية
+        text = "📊 <b>لوحة إدارة الصفقات</b>\n"
+        text += "قم باختيار صفقة من الأسفل لعرض التفاصيل الكاملة، أو استخدم أزرار الفلترة لتغيير التصنيف:\n\n"
+        text += f"📌 <b>التصنيف الحالي:</b> {'نشطة (الأكثر ربحاً)'}"
+
+        await message.answer(text, reply_markup=get_trades_keyboard(trades, filter_type, page, has_next), parse_mode="HTML")
     except Exception as e:
         logging.error(f"Listener Error: {e}")
-        await message.answer(f"⚠️ عذراً، حدث خطأ أثناء جلب صفقاتك: {e}")
+        await message.answer("⚠️ عذراً، حدث خطأ أثناء جلب صفقاتك.")
 
+
+# هاندلر التنقل بين الصفحات وتغيير الفلاتر
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('nav:'), state="*")
+async def navigate_trades_callback(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    _, filter_type, page_str = callback_query.data.split(':')
+    page = int(page_str)
+
+    try:
+        trades, has_next = await fetch_filtered_trades(supabase, user_id, filter_type, page)
+        
+        filter_names = {
+            "active_profit": "نشطة (الأكثر ربحاً)",
+            "active_loss": "نشطة (الأكثر خسارة)",
+            "closed_win": "مغلقة (ناجحة)",
+            "closed_loss": "مغلقة (فاشلة)"
+        }
+
+        text = "📊 <b>لوحة إدارة الصفقات</b>\n"
+        text += "قم باختيار صفقة من الأسفل لعرض التفاصيل الكاملة، أو استخدم أزرار الفلترة لتغيير التصنيف:\n\n"
+        text += f"📌 <b>التصنيف الحالي:</b> {filter_names.get(filter_type, '')}\n"
+        text += f"📄 <b>الصفحة:</b> {page + 1}"
+
+        if not trades:
+            text += "\n\n⚠️ لا توجد صفقات في هذا القسم."
+
+        keyboard = get_trades_keyboard(trades, filter_type, page, has_next)
+        
+        # تحديث الرسالة فقط إذا كان هناك تغيير (لتجنب أخطاء التليجرام)
+        await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback_query.answer()
+    except Exception as e:
+        logging.error(f"Navigation Error: {e}")
+        await callback_query.answer("⚠️ حدث خطأ أثناء تحديث القائمة.", show_alert=True)
+        
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('view_trade:'), state="*")
+async def view_trade_details(callback_query: types.CallbackQuery):
+    trade_id = int(callback_query.data.split(':')[1])
+    
+    try:
+        res = supabase.table("active_trades").select("*").eq("id", trade_id).execute()
+        if not res.data:
+            return await callback_query.answer("⚠️ لم يتم العثور على الصفقة، ربما تم حذفها.", show_alert=True)
+            
+        trade = res.data[0]
+        
+        # تجهيز المتغيرات المشتركة
+        is_long = trade['trade_type'].upper() in ["LONG", "شراء"]
+        trade_icon = "🟢" if is_long else "🔴"
+        trade_label = "شراء (LONG)" if is_long else "بيع (SHORT)"
+        strategy_name = trade.get('strategy_used_name') or "غير محدد"
+        strategy_id = trade.get('strategy_id', 'غير محدد')
+        coin_name = trade['coin_name']
+        leverage = trade['leverage']
+        coin_shares = trade['coin_shares']
+        used_amount = trade['used_amount']
+        borrowed_amount = trade['borrowed_amount']
+        entry_price = trade['entry_price']
+        current_price = trade['current_price']
+        highest = trade.get('highest_price_reached') or entry_price
+        lowest = trade.get('lowest_price_reached') or entry_price
+        pnl_percentage = trade.get('pnl_percentage', 0.0)
+        
+        # حساب الوقت المستغرق
+        created_at_str = trade.get('created_at')
+        time_spent_str = "قيد الحساب..."
+        if created_at_str:
+            try:
+                created_dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                if created_dt.tzinfo is None: created_dt = created_dt.replace(tzinfo=timezone.utc)
+                end_time = datetime.fromisoformat(trade['closed_at'].replace('Z', '+00:00')) if trade.get('closed_at') else datetime.now(timezone.utc)
+                time_spent = end_time - created_dt
+                days, seconds = time_spent.days, time_spent.seconds
+                hours, minutes = seconds // 3600, (seconds % 3600) // 60
+                time_parts = []
+                if days > 0: time_parts.append(f"{days} يوم")
+                if hours > 0: time_parts.append(f"{hours} ساعة")
+                if minutes > 0: time_parts.append(f"{minutes} دقيقة")
+                time_spent_str = " و ".join(time_parts) if time_parts else "أقل من دقيقة"
+            except Exception:
+                pass
+
+        if trade['status'] == "نشطة":
+            # ----------------- قالب الصفقة النشطة -----------------
+            support_zone = trade.get('support_zone', 0)
+            stop_loss = trade.get('stop_loss', 0)
+            target_1 = trade.get('target_1', 0)
+            target_2 = trade.get('target_2', 0)
+            target_3 = trade.get('target_3', 0)
+            net_pnl = float(used_amount) * (float(pnl_percentage) / 100) # الربح غير المحقق المتقريبي
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            notification_msg = (
+                "ــــــــــــــــــــــــــــــــــــ\n\n"
+                f"{trade_icon} نوع الصفقة : {trade_label}\n"
+                f"🎯 إسم الإستراتيجية : {strategy_name}\n"
+                f"🔢 رقم الاستراتجية : {strategy_id}\n"
+                f"💸 إسم العملة : #{coin_name}\n"
+                f"🔄 الرافعة المالية : {leverage}x\n"
+                f"💳 الكمية : {format_num(coin_shares, 4)}\n"
+                f"📊 المبلغ : {format_num(used_amount, 2)}$\n"
+                f"🧾 الإقتراض : {format_num(borrowed_amount, 2)}$\n"
+                f"📈 سعر الدخول : {format_num(entry_price)}\n"
+                f"⁦🔼 منطقة الدعم : {format_num(support_zone)}\n"
+                f"🚫 وقف الخسارة : {format_num(stop_loss)}\n"
+                f"🥇 الهدف الاول : {format_num(target_1)}\n"
+                f"🥈 الهدف الثاني : {format_num(target_2)}\n"
+                f"🥉 الهدف الثالث : {format_num(target_3)}\n"
+                f"🔼 اقصى سعر : {format_num(highest)}\n"
+                f"🔽 أدنى سعر : {format_num(lowest)}\n"
+                f"💵 الربح او الخسارة : {format_num(net_pnl, 4)}$\n"
+                f"🧾 النسبة المئوية : {format_num(pnl_percentage, 2)}%\n"
+                f"🕛 الوقت المستغرق : {time_spent_str}\n"
+                f"🕛 وقت فتح الصفقة: {current_time}\n\n"
+                "ــــــــــــــــــــــــــــــــــــ"
+            )
+        else:
+            # ----------------- قالب الصفقة المغلقة -----------------
+            close_price = trade.get('close_price', current_price)
+            close_reason = trade.get('close_reason', 'مجهول')
+            realized_pnl = trade.get('realized_pnl', 0.0)
+            closing_fee = trade.get('trading_fees', 0.0)
+            # نفترض جلب رصيد المحفظة من مكان ما، أو نضع 0 إذا لم يكن متوفراً
+            updated_balance = 0.0 
+
+            notification_msg = "\n".join([
+                "ــــــــــــــــــــــــــــــــــــ",
+                "",
+                f"{trade_icon} نوع الصفقة : {trade_label}",
+                f"🎯 إسم الإستراتيجية : {strategy_name}",
+                f"🔢 رقم الاستراتجية : {strategy_id}",
+                f"💸 إسم العملة : #{coin_name}",
+                f"🔄 الرافعة المالية : {leverage}x",
+                f"💳 الكمية : {format_num(coin_shares, 4)}",
+                f"📊 المبلغ : {format_num(used_amount, 2)}$",
+                f"🧾 الإقتراض : {format_num(borrowed_amount, 2)}$",
+                f"📈 سعر الدخول : {format_num(entry_price)}",
+                f"⁦📝 سعر الإغلاق : {format_num(close_price)}",
+                f"🔼 اقصى سعر : {format_num(highest)}",
+                f"🔽 أدنى سعر : {format_num(lowest)}",
+                f"💵 الربح او الخسارة : {format_num(realized_pnl, 4)}$",
+                f"🧾 النسبة المئوية : {format_num(pnl_percentage, 2)}%",
+                f"🕛 الوقت المستغرق : {time_spent_str}",
+                f"🤔 سبب الإغلاق : {close_reason}",
+                f"💸 خصم رسوم الصفقة : {format_num(closing_fee, 4)}$",
+                f"💳 رصيد المحفظة : {format_num(updated_balance, 2)}$",
+                "",
+                "ــــــــــــــــــــــــــــــــــــ"
+            ])
+
+        # زر الرجوع للقائمة
+        back_kb = InlineKeyboardMarkup().add(
+            InlineKeyboardButton("🔙 رجوع للقائمة", callback_data="nav:active_profit:0")
+        )
+
+        await callback_query.message.edit_text(notification_msg, reply_markup=back_kb)
+        await callback_query.answer()
+
+    except Exception as e:
+        logging.error(f"View Trade Error: {e}")
+        await callback_query.answer("⚠️ حدث خطأ أثناء تحميل تفاصيل الصفقة.", show_alert=True)
 
 # ==========================================
 # 🪙 4. مستمع عرض قالب العملة المختار
@@ -2151,67 +2383,7 @@ async def process_trade_confirm(callback_query: types.CallbackQuery):
     except Exception as e:
         print(f"Trade Confirmation Error: {e}")
         await callback_query.answer("❌ فشل تنفيذ الصفقة.")
-        
-@dp.callback_query_handler(Text(startswith='pending_trades_view:'), state="*")
-async def pending_trades_view(callback_query: types.CallbackQuery):
-    data_parts = callback_query.data.split(':')
-    owner_id = int(data_parts[1])
-    
-    # التأكد من هوية المستخدم
-    if callback_query.from_user.id != owner_id:
-        return await callback_query.answer("⚠️ هذه القائمة ليست لك!", show_alert=True)
 
-    try:
-        # جلب الصفقات غير النشطة (is_active = False)
-        res = supabase.table("active_trades")\
-            .select("*")\
-            .eq("user_id", owner_id)\
-            .eq("is_active", False)\
-            .order("created_at", desc=True).execute()
-        
-        trades = res.data
-        
-        if not trades:
-            text = "⏳ <b>لا توجد لديك طلبات معلقة حالياً.</b>\n\n<i>بمجرد تحديد منطقة دخول، ستظهر طلباتك هنا حتى يلمسها السعر.</i>"
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📋 عرض الصفقات النشطة", callback_data=f"active_trades_view:{owner_id}"))
-            markup.add(InlineKeyboardButton("🔙 العودة للمحفظة", callback_data=f"wallet_tab:{owner_id}"))
-            return await callback_query.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
-
-        text = "⏳ <b>قائمة الطلبات المعلقة (Limit Orders)</b>\n"
-        text += "━━━━━━━━━━━━━━━━━━\n\n"
-        
-        markup = InlineKeyboardMarkup(row_width=2)
-        
-        for t in trades:
-            side_icon = "🟢" if t['side'] == 'LONG' else "🔴"
-            entry_p = float(t['entry_price'])
-            margin = float(t['margin'])
-            symbol = t['symbol']
-            trade_id = t['trade_id']
-            
-            p_fmt = f"{entry_p:,.4f}" if entry_p < 1 else f"{entry_p:,.2f}"
-            
-            text += f"{side_icon} <b>#{symbol}</b> ({t['leverage']}x)\n"
-            text += f"🎯 سعر الدخول المطلوب: <code>{p_fmt} $</code>\n"
-            text += f"💰 الهامش المحجوز: <code>{margin:,.2f} $</code>\n"
-            text += f"🗓 التاريخ: <code>{t['created_at'][:16].replace('T', ' ')}</code>\n"
-            text += "━━━━━━━━━━━━━━━━━━\n"
-            
-            # زر إلغاء الطلب لكل صفقة
-            markup.add(InlineKeyboardButton(f"❌ إلغاء طلب {symbol}", callback_data=f"cancel_limit:{owner_id}:{trade_id}"))
-
-        # أزرار التنقل السفلية
-        markup.row(
-            InlineKeyboardButton("🔙 صفقاتي النشطة", callback_data=f"active_trades_view:{owner_id}"),
-            InlineKeyboardButton("🏠 الرئيسية", callback_data=f"wallet_tab:{owner_id}")
-        )
-
-        await callback_query.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
-        
-    except Exception as e:
-        print(f"Error viewing pending trades: {e}")
-        await callback_query.answer("⚠️ حدث خطأ أثناء جلب البيانات.")
         
 @dp.callback_query_handler(Text(startswith='cancel_limit:'), state="*")
 async def cancel_limit_order(callback_query: types.CallbackQuery):
