@@ -1341,7 +1341,6 @@ async def fetch_filtered_trades(supabase, user_id, filter_type="active_profit", 
 
     return res.data, has_next
 
-
 def get_trades_keyboard(trades, filter_type, page, has_next):
     keyboard = InlineKeyboardMarkup(row_width=2) # جعلناها 2 لتكون الأزرار بجانب بعضها إن أردت
     
@@ -1379,11 +1378,66 @@ def get_trades_keyboard(trades, filter_type, page, has_next):
     return keyboard
 
 
+# ---------------- دالة مساعدة لبناء قالب رسالة الصفقات (فخم ومميز) ----------------
+async def build_trades_list_text(trades, filter_type, page):
+    filter_names = {
+        "active_profit": "🔥 نشطة (الأكثر ربحاً)",
+        "active_loss": "🩸 نشطة (الأكثر خسارة)",
+        "closed_win": "🏆 مغلقة (ناجحة)",
+        "closed_loss": "💔 مغلقة (فاشلة)"
+    }
+    
+    # ترويسة فخمة
+    text = f"🎛 <b>لوحة القيادة | إدارة الصفقات</b>\n"
+    text += f"⚜️ <b>التصنيف الحالي:</b> {filter_names.get(filter_type, 'غير محدد')}\n"
+    text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    if not trades:
+        text += "📭 <i>لا توجد صفقات في هذا القسم حالياً...</i>\n"
+        return text
+        
+    # حلقة التكرار لطباعة تفاصيل الصفقات
+    for t in trades:
+        is_long = t['trade_type'].upper() in ["LONG", "شراء"]
+        icon = "🟢" if is_long else "🔴"
+        trade_type = "LONG" if is_long else "SHORT"
+        s_name = t.get('strategy_used_name') or "غير محدد"
+        s_id = t.get('strategy_id', 'غير محدد')
+        
+        # جلب القيم كأرقام لتجنب أخطاء العمليات الحسابية
+        try:
+            pnl_perc = float(t.get('pnl_percentage', 0.0))
+            used_amount = float(t.get('used_amount', 0.0))
+        except (ValueError, TypeError):
+            pnl_perc = 0.0
+            used_amount = 0.0
+            
+        # حساب الربح/الخسارة بالدولار
+        pnl_usd = used_amount * (pnl_perc / 100)
+        
+        # تنسيق إشارة الموجب لتمييز الأرباح
+        sign_usd = "+" if pnl_usd > 0 else ""
+        sign_perc = "+" if pnl_perc > 0 else ""
+        
+        text += f"{icon} <b>العملة:</b> #{t['coin_name']} | <b>النوع:</b> <code>{trade_type}</code>\n"
+        text += f"🎯 <b>الإستراتيجية:</b> {s_name} <code>[رقم: {s_id}]</code>\n"
+        text += f"💵 <b>المبلغ المستخدم:</b> <code>{used_amount:.2f}$</code>\n"
+        text += f"📊 <b>نسبة العائد:</b> <code>{sign_perc}{pnl_perc:.2f}%</code>\n"
+        text += f"💸 <b>الربح/الخسارة:</b> <code>{sign_usd}{pnl_usd:.2f}$</code>\n"
+        text += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        
+    # تذييل الرسالة
+    text += f"\n📄 <b>رقم الصفحة:</b> <code>{page + 1}</code>\n"
+    text += "👇 <i>انقر على أزرار العملات بالأسفل لعرض التفاصيل الدقيقة:</i>"
+    
+    return text
+
+
+# ---------------- هاندلر استدعاء قائمة الصفقات ----------------
 @dp.message_handler(Text(equals=["صفقاتي", "الصفقات"], ignore_case=True), state="*")
 async def listener_trades(message: types.Message):
     user_id = int(message.from_user.id)
     try:
-        # افتراضياً نعرض الصفقات النشطة الأكثر ربحاً (الصفحة 0)
         filter_type = "active_profit"
         page = 0
         trades, has_next = await fetch_filtered_trades(supabase, user_id, filter_type, page)
@@ -1392,27 +1446,8 @@ async def listener_trades(message: types.Message):
             await message.answer("⚠️ لا توجد صفقات لعرضها حالياً في هذا القسم.", reply_markup=get_market_keyboard(user_id))
             return
 
-        # ---------------- بناء نص الرسالة العلوية ----------------
-        text = "📊 <b>لوحة إدارة الصفقات</b>\n\n"
-        
-        # حلقة تكرار لطباعة تفاصيل كل صفقة مع سطر فاصل
-        for t in trades:
-            is_long = t['trade_type'].upper() in ["LONG", "شراء"]
-            icon = "🟢" if is_long else "🔴"
-            trade_type = "شراء (Long)" if is_long else "بيع (Short)"
-            s_name = t.get('strategy_used_name') or "غير محدد"
-            s_id = t.get('strategy_id', 'غير محدد')
-            pnl = t.get('pnl_percentage', 0.0)
-            used_amount = t.get('used_amount', 0.0)
-            
-            text += f"{icon} <b>العملة:</b> #{t['coin_name']} | <b>النوع:</b> {trade_type}\n"
-            text += f"🎯 <b>الإستراتيجية:</b> {s_name} (رقم {s_id})\n"
-            text += f"💵 <b>المبلغ:</b> {used_amount}$ | <b>النسبة:</b> %{pnl}\n"
-            text += "ــــــــــــــــــــــــــــــــــــ\n"
-            
-        text += f"\n📌 <b>التصنيف الحالي:</b> نشطة (الأكثر ربحاً)\n"
-        text += f"📄 <b>الصفحة:</b> {page + 1}\n\n"
-        text += "👇 <b>انقر على اسم العملة بالأسفل لعرض كافة التفاصيل:</b>"
+        # استدعاء الدالة المساعدة لبناء النص الفخم
+        text = await build_trades_list_text(trades, filter_type, page)
 
         await message.answer(text, reply_markup=get_trades_keyboard(trades, filter_type, page, has_next), parse_mode="HTML")
     except Exception as e:
@@ -1420,7 +1455,7 @@ async def listener_trades(message: types.Message):
         await message.answer("⚠️ عذراً، حدث خطأ أثناء جلب صفقاتك.")
         
 
-# هاندلر التنقل بين الصفحات وتغيير الفلاتر
+# ---------------- هاندلر التنقل بين الصفحات وتغيير الفلاتر ----------------
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('nav:'), state="*")
 async def navigate_trades_callback(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
@@ -1430,21 +1465,8 @@ async def navigate_trades_callback(callback_query: types.CallbackQuery):
     try:
         trades, has_next = await fetch_filtered_trades(supabase, user_id, filter_type, page)
         
-        filter_names = {
-            "active_profit": "نشطة (الأكثر ربحاً)",
-            "active_loss": "نشطة (الأكثر خسارة)",
-            "closed_win": "مغلقة (ناجحة)",
-            "closed_loss": "مغلقة (فاشلة)"
-        }
-
-        text = "📊 <b>لوحة إدارة الصفقات</b>\n"
-        text += "قم باختيار صفقة من الأسفل لعرض التفاصيل الكاملة، أو استخدم أزرار الفلترة لتغيير التصنيف:\n\n"
-        text += f"📌 <b>التصنيف الحالي:</b> {filter_names.get(filter_type, '')}\n"
-        text += f"📄 <b>الصفحة:</b> {page + 1}"
-
-        if not trades:
-            text += "\n\n⚠️ لا توجد صفقات في هذا القسم."
-
+        # استدعاء نفس الدالة المساعدة لضمان توحيد القالب عند التنقل
+        text = await build_trades_list_text(trades, filter_type, page)
         keyboard = get_trades_keyboard(trades, filter_type, page, has_next)
         
         # تحديث الرسالة فقط إذا كان هناك تغيير (لتجنب أخطاء التليجرام)
