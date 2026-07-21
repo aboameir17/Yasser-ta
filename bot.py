@@ -1562,7 +1562,7 @@ async def view_trade_details(callback_query: types.CallbackQuery):
                 f"📅 وقت فتح الصفقة: {open_time_str}\n\n"
                 "ــــــــــــــــــــــــــــــــــــ"
             )
-    else:
+        else:
             # ----------------- قالب الصفقة المغلقة -----------------
             close_price = trade.get('close_price', current_price)
             close_reason = trade.get('close_reason', 'مجهول')
