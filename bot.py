@@ -1340,20 +1340,21 @@ async def fetch_filtered_trades(supabase, user_id, filter_type="active_profit", 
     has_next = len(next_page_check.data) > 0
 
     return res.data, has_next
-    
+
 
 def get_trades_keyboard(trades, filter_type, page, has_next):
-    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard = InlineKeyboardMarkup(row_width=2) # جعلناها 2 لتكون الأزرار بجانب بعضها إن أردت
     
-    # 1. أزرار الصفقات الـ 10
+    # 1. أزرار الصفقات (باسم العملة والرمز فقط لأن التفاصيل موجودة في النص أعلاه)
     for trade in trades:
         trade_id = trade['id']
         coin = trade['coin_name']
-        pnl_perc = trade.get('pnl_percentage', 0.0)
-        trade_type = "🟢 LONG" if trade['trade_type'].upper() in ["LONG", "شراء"] else "🔴 SHORT"
         
-        # تنسيق اسم الزر
-        btn_text = f"{trade_type} | #{coin} | {pnl_perc}%"
+        # تحديد لون الزر (إيموجي) بناءً على نوع الصفقة
+        icon = "🟢" if trade['trade_type'].upper() in ["LONG", "شراء"] else "🔴"
+        
+        # اسم الزر: لون + اسم العملة
+        btn_text = f"{icon} #{coin}"
         keyboard.add(InlineKeyboardButton(text=btn_text, callback_data=f"view_trade:{trade_id}"))
 
     # 2. أزرار التنقل (السابق / التالي)
@@ -1391,16 +1392,33 @@ async def listener_trades(message: types.Message):
             await message.answer("⚠️ لا توجد صفقات لعرضها حالياً في هذا القسم.", reply_markup=get_market_keyboard(user_id))
             return
 
-        # نص الرسالة العلوية
-        text = "📊 <b>لوحة إدارة الصفقات</b>\n"
-        text += "قم باختيار صفقة من الأسفل لعرض التفاصيل الكاملة، أو استخدم أزرار الفلترة لتغيير التصنيف:\n\n"
-        text += f"📌 <b>التصنيف الحالي:</b> {'نشطة (الأكثر ربحاً)'}"
+        # ---------------- بناء نص الرسالة العلوية ----------------
+        text = "📊 <b>لوحة إدارة الصفقات</b>\n\n"
+        
+        # حلقة تكرار لطباعة تفاصيل كل صفقة مع سطر فاصل
+        for t in trades:
+            is_long = t['trade_type'].upper() in ["LONG", "شراء"]
+            icon = "🟢" if is_long else "🔴"
+            trade_type = "شراء (Long)" if is_long else "بيع (Short)"
+            s_name = t.get('strategy_used_name') or "غير محدد"
+            s_id = t.get('strategy_id', 'غير محدد')
+            pnl = t.get('pnl_percentage', 0.0)
+            used_amount = t.get('used_amount', 0.0)
+            
+            text += f"{icon} <b>العملة:</b> #{t['coin_name']} | <b>النوع:</b> {trade_type}\n"
+            text += f"🎯 <b>الإستراتيجية:</b> {s_name} (رقم {s_id})\n"
+            text += f"💵 <b>المبلغ:</b> {used_amount}$ | <b>النسبة:</b> %{pnl}\n"
+            text += "ــــــــــــــــــــــــــــــــــــ\n"
+            
+        text += f"\n📌 <b>التصنيف الحالي:</b> نشطة (الأكثر ربحاً)\n"
+        text += f"📄 <b>الصفحة:</b> {page + 1}\n\n"
+        text += "👇 <b>انقر على اسم العملة بالأسفل لعرض كافة التفاصيل:</b>"
 
         await message.answer(text, reply_markup=get_trades_keyboard(trades, filter_type, page, has_next), parse_mode="HTML")
     except Exception as e:
         logging.error(f"Listener Error: {e}")
         await message.answer("⚠️ عذراً، حدث خطأ أثناء جلب صفقاتك.")
-
+        
 
 # هاندلر التنقل بين الصفحات وتغيير الفلاتر
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('nav:'), state="*")
@@ -1435,7 +1453,7 @@ async def navigate_trades_callback(callback_query: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Navigation Error: {e}")
         await callback_query.answer("⚠️ حدث خطأ أثناء تحديث القائمة.", show_alert=True)
-        
+
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('view_trade:'), state="*")
 async def view_trade_details(callback_query: types.CallbackQuery):
     trade_id = int(callback_query.data.split(':')[1])
@@ -1460,28 +1478,54 @@ async def view_trade_details(callback_query: types.CallbackQuery):
         borrowed_amount = trade['borrowed_amount']
         entry_price = trade['entry_price']
         current_price = trade['current_price']
+        
+        # السعر العادل (إذا لم يكن في قاعدة البيانات يمكنك جلبه من API، هنا افترضنا أنه موجود أو يطابق الحالي)
+        fair_price = trade.get('fair_price', current_price) 
+        
         highest = trade.get('highest_price_reached') or entry_price
         lowest = trade.get('lowest_price_reached') or entry_price
         pnl_percentage = trade.get('pnl_percentage', 0.0)
         
-        # حساب الوقت المستغرق
+        # ----------------- حساب الوقت المستغرق ووقت الفتح -----------------
         created_at_str = trade.get('created_at')
-        time_spent_str = "قيد الحساب..."
+        time_spent_str = "غير معروف"
+        open_time_str = "غير معروف"
+        
         if created_at_str:
             try:
+                # تحويل النص إلى كائن وقت وتوحيد المنطقة الزمنية إلى UTC
                 created_dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                if created_dt.tzinfo is None: created_dt = created_dt.replace(tzinfo=timezone.utc)
-                end_time = datetime.fromisoformat(trade['closed_at'].replace('Z', '+00:00')) if trade.get('closed_at') else datetime.now(timezone.utc)
+                if created_dt.tzinfo is None: 
+                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+                
+                # استخراج وقت فتح الصفقة الفعلي
+                open_time_str = created_dt.strftime("%Y-%m-%d %H:%M")
+                
+                # تحديد وقت النهاية بناءً على حالة الصفقة
+                if trade['status'] == "نشطة":
+                    end_time = datetime.now(timezone.utc)
+                else:
+                    end_time = datetime.fromisoformat(trade['closed_at'].replace('Z', '+00:00')) if trade.get('closed_at') else datetime.now(timezone.utc)
+                
+                # حساب الفارق الزمني
                 time_spent = end_time - created_dt
-                days, seconds = time_spent.days, time_spent.seconds
-                hours, minutes = seconds // 3600, (seconds % 3600) // 60
-                time_parts = []
-                if days > 0: time_parts.append(f"{days} يوم")
-                if hours > 0: time_parts.append(f"{hours} ساعة")
-                if minutes > 0: time_parts.append(f"{minutes} دقيقة")
-                time_spent_str = " و ".join(time_parts) if time_parts else "أقل من دقيقة"
-            except Exception:
-                pass
+                total_seconds = int(time_spent.total_seconds()) # استخدام إجمالي الثواني لتجنب أخطاء الأيام
+                
+                if total_seconds < 60:
+                    time_spent_str = "أقل من دقيقة"
+                else:
+                    days = total_seconds // 86400
+                    hours = (total_seconds % 86400) // 3600
+                    minutes = (total_seconds % 3600) // 60
+                    
+                    time_parts = []
+                    if days > 0: time_parts.append(f"{days} يوم")
+                    if hours > 0: time_parts.append(f"{hours} ساعة")
+                    if minutes > 0: time_parts.append(f"{minutes} دقيقة")
+                    time_spent_str = " و ".join(time_parts)
+            except Exception as e:
+                logging.error(f"Time parsing error: {e}")
+                time_spent_str = "خطأ في حساب الوقت"
 
         if trade['status'] == "نشطة":
             # ----------------- قالب الصفقة النشطة -----------------
@@ -1490,8 +1534,7 @@ async def view_trade_details(callback_query: types.CallbackQuery):
             target_1 = trade.get('target_1', 0)
             target_2 = trade.get('target_2', 0)
             target_3 = trade.get('target_3', 0)
-            net_pnl = float(used_amount) * (float(pnl_percentage) / 100) # الربح غير المحقق المتقريبي
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            net_pnl = float(used_amount) * (float(pnl_percentage) / 100)
 
             notification_msg = (
                 "ــــــــــــــــــــــــــــــــــــ\n\n"
@@ -1504,6 +1547,8 @@ async def view_trade_details(callback_query: types.CallbackQuery):
                 f"📊 المبلغ : {format_num(used_amount, 2)}$\n"
                 f"🧾 الإقتراض : {format_num(borrowed_amount, 2)}$\n"
                 f"📈 سعر الدخول : {format_num(entry_price)}\n"
+                f"💲 السعر الحالي : {format_num(current_price)}\n"
+                f"⚖️ السعر العادل : {format_num(fair_price)}\n"
                 f"⁦🔼 منطقة الدعم : {format_num(support_zone)}\n"
                 f"🚫 وقف الخسارة : {format_num(stop_loss)}\n"
                 f"🥇 الهدف الاول : {format_num(target_1)}\n"
@@ -1514,10 +1559,10 @@ async def view_trade_details(callback_query: types.CallbackQuery):
                 f"💵 الربح او الخسارة : {format_num(net_pnl, 4)}$\n"
                 f"🧾 النسبة المئوية : {format_num(pnl_percentage, 2)}%\n"
                 f"🕛 الوقت المستغرق : {time_spent_str}\n"
-                f"🕛 وقت فتح الصفقة: {current_time}\n\n"
+                f"📅 وقت فتح الصفقة: {open_time_str}\n\n"
                 "ــــــــــــــــــــــــــــــــــــ"
             )
-        else:
+    else:
             # ----------------- قالب الصفقة المغلقة -----------------
             close_price = trade.get('close_price', current_price)
             close_reason = trade.get('close_reason', 'مجهول')
