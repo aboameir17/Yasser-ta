@@ -3808,17 +3808,8 @@ async def main_startup():
     await site.start()
     logging.info(f"🌐 Server Active on port {port}")
 
-    # ==========================================
-    # إصلاح دالة المراقبة (Wrapper with Loop)
-    # ==========================================
-    async def run_monitor_continuously():
-        while True:
-            # هنا نقوم بتمرير supabase بشكل صحيح
-            await monitor_active_trades(supabase)
             
-            # راحة لمدة 3 ثواني بين كل فحص (لحماية قاعدة البيانات وتخفيف المعالج)
-            await asyncio.sleep(4) 
-    asyncio.create_task(watch_dog(monitor_loop())
+    asyncio.create_task(monitor_loop())
     asyncio.create_task(watch_dog(unified_trading_system))
     asyncio.create_task(watch_dog(self_resuscitation))
     
