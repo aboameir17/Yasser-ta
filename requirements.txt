@@ -12,3 +12,4 @@ ccxt
 pandas
 numpy
 scipy
+binance
