@@ -113,16 +113,30 @@ def generate_candle_chart(direction):
         return "📉 ⇠ |---🟩---|\n⇠ 🚀 صعود إيجابي"
     else:
         return "📈 ⇠ |---🟥---|\n⇠ 🩸 هبوط سلبي"
+
+import math
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 def build_portfolio_view(portfolios, stats, page=0, filter_type="all"):
-    # 1. الفرز (تصفية البيانات)
+    # 1. معالجة وتصفية البيانات (تعديل معيار النجاح والفشل إلى 40%)
     filtered = []
     for p in portfolios:
-        pnl = float(p.get('pnl_percentage', 0))
-        if filter_type == "win" and pnl > 0: filtered.append(p)
-        elif filter_type == "loss" and pnl < 0: filtered.append(p)
-        elif filter_type == "all": filtered.append(p)
+        # معالجة مشكلة الـ 0.0%: إذا كانت النسبة صفر، نقوم بحسابها برمجياً
+        pnl = float(p.get('pnl_percentage') or 0)
+        if pnl == 0:
+            curr = float(p.get('current_balance', 0))
+            prev = float(p.get('previous_balance', 0)) # تأكد أن لديك هذا الحقل في القاعدة
+            if prev > 0:
+                pnl = ((curr - prev) / prev) * 100
+                p['pnl_percentage'] = pnl # تحديث القيمة للواجهة
+
+        # الفرز بناءً على الشرط الجديد (40% فما فوق ناجح، أقل من 40% فاشل)
+        if filter_type == "win" and pnl >= 40.0: 
+            filtered.append(p)
+        elif filter_type == "loss" and pnl < 40.0: 
+            filtered.append(p)
+        elif filter_type == "all": 
+            filtered.append(p)
         
     # 2. نظام الصفحات (الباجينيشن)
     items_per_page = 3
@@ -134,7 +148,7 @@ def build_portfolio_view(portfolios, stats, page=0, filter_type="all"):
     current_items = filtered[start_idx:end_idx]
 
     # 3. بناء النص
-    filter_names = {"all": "🌐 الكل", "win": "🟢 الناجحة", "loss": "🔴 الفاشلة"}
+    filter_names = {"all": "🌐 الكل", "win": "🟢 الناجحة (≥ 40%)", "loss": "🔴 الفاشلة (< 40%)"}
     text = "💼 <b>لوحة القيادة | المحفظة الاستثمارية</b>\n"
     text += f"🔎 <b>الفلتر الحالي:</b> {filter_names[filter_type]}\n"
     text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -142,32 +156,35 @@ def build_portfolio_view(portfolios, stats, page=0, filter_type="all"):
     if not current_items:
         text += "📭 <i>لا توجد محافظ مطابقة لهذا الفلتر...</i>\n"
     else:
-        # أرقام تعبيرية لربطها بالأزرار
         emojis = ["1️⃣", "2️⃣", "3️⃣"]
         for i, p in enumerate(current_items):
             s_name = p['strategy_name']
+            s_id = p.get('strategy_id', 'N/A') # إضافة رقم الإستراتيجية
             curr_bal = float(p.get('current_balance', 0))
             pnl_perc = float(p.get('pnl_percentage', 0))
-            s_stats = stats.get(p['strategy_id'], {'wins': 0, 'losses': 0})
+            s_stats = stats.get(s_id, {'wins': 0, 'losses': 0})
             
-            icon = "🟢" if pnl_perc > 0 else ("🔴" if pnl_perc < 0 else "⚪")
+            # تعديل الأيقونات حسب المعيار الجديد
+            icon = "🟢" if pnl_perc >= 40.0 else "🔴"
+            sign = "+" if pnl_perc > 0 else ""
             
-            text += f"{emojis[i]} <b>{s_name}</b>\n"
-            text += f"   💵 <b>الرصيد:</b> <code>{curr_bal:.2f}$</code> | 📈 <b>النمو:</b> <code>{pnl_perc:.2f}% {icon}</code>\n"
+            # عرض رقم الإستراتيجية بجوار الاسم
+            text += f"{emojis[i]} <b>{s_name}</b> <code>[رقم: {s_id}]</code>\n"
+            text += f"   💵 <b>الرصيد:</b> <code>{curr_bal:.2f}$</code> | 📈 <b>النمو:</b> <code>{sign}{pnl_perc:.2f}% {icon}</code>\n"
             text += f"   🏆 <b>الناجحة:</b> {s_stats['wins']} | 💔 <b>الفاشلة:</b> {s_stats['losses']}\n"
             text += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
 
     # 4. بناء الأزرار (لوحة التحكم)
     kb = InlineKeyboardMarkup(row_width=3)
     
-    # أزرار الإستراتيجيات (قصيرة جداً: 1️⃣ التفاصيل)
+    # أزرار الإستراتيجيات
     strat_buttons = []
     for i, p in enumerate(current_items):
         strat_buttons.append(InlineKeyboardButton(f"{emojis[i]} التفاصيل", callback_data=f"si:{p['strategy_id']}"))
     if strat_buttons:
         kb.add(*strat_buttons)
 
-    # أزرار الفلترة
+    # أزرار الفلترة للمحافظ
     kb.row(
         InlineKeyboardButton("🟢 الناجحة", callback_data=f"p:0:win"),
         InlineKeyboardButton("🌐 الكل", callback_data=f"p:0:all"),
@@ -187,6 +204,54 @@ def build_portfolio_view(portfolios, stats, page=0, filter_type="all"):
     kb.row(*nav_buttons)
     
     return text, kb
+
+
+def build_trades_view(trades, strategy_id, trade_type="w", page=0):
+    items_per_page = 5
+    total_pages = math.ceil(len(trades) / items_per_page) if trades else 1
+    page = max(0, min(page, total_pages - 1))
+    
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_trades = trades[start_idx:end_idx]
+
+    type_name = "🟢 الصفقات الناجحة" if trade_type == "w" else "🔴 الصفقات الفاشلة"
+    text = f"🗂 <b>سجل الصفقات | {type_name}</b>\n"
+    text += f"🔢 <b>صفحة:</b> {page+1}/{total_pages} | <b>إستراتيجية رقم:</b> <code>{strategy_id}</code>\n"
+    text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    if not current_trades:
+        text += "<i>لا توجد صفقات من هذا النوع مسجلة بعد...</i>\n"
+    else:
+        for i, t in enumerate(current_trades, start_idx + 1):
+            coin = t['coin_name']
+            pnl = float(t.get('realized_pnl', 0))
+            perc = float(t.get('pnl_percentage', 0))
+            sign = "+" if pnl > 0 else ""
+            text += f"<b>{i}.</b> #{coin} ➔ <code>{sign}{pnl:.2f}$</code> ({sign}{perc:.2f}%)\n"
+
+    # بناء الأزرار
+    kb = InlineKeyboardMarkup(row_width=2)
+    
+    # فلتر الصفقات
+    kb.row(
+        InlineKeyboardButton("🟢 الناجحة", callback_data=f"tr:{strategy_id}:w:0"),
+        InlineKeyboardButton("🔴 الخاسرة", callback_data=f"tr:{strategy_id}:l:0")
+    )
+    
+    # التنقل (التالي والرجوع للصفقات)
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"tr:{strategy_id}:{trade_type}:{page-1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("التالي ➡️", callback_data=f"tr:{strategy_id}:{trade_type}:{page+1}"))
+    if nav_buttons:
+        kb.row(*nav_buttons)
+        
+    # رجوع للوحة القيادة
+    kb.add(InlineKeyboardButton("🔙 رجوع للوحة المحافظ", callback_data="p:0:all"))
+    return text, kb
+    
 
 def build_trades_view(trades, strategy_id, trade_type="w", page=0):
     items_per_page = 5
