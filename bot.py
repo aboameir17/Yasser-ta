@@ -114,6 +114,131 @@ def generate_candle_chart(direction):
     else:
         return "📈 ⇠ |---🟥---|\n⇠ 🩸 هبوط سلبي"
 
+def get_portfolio_keyboard(portfolios):
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    
+    for p in portfolios:
+        s_id = p['strategy_id']
+        s_name = p['strategy_name']
+        balance = float(p.get('current_balance', 0))
+        
+        # زر لكل إستراتيجية
+        btn_text = f"📊 {s_name} | الرصيد: {balance:.2f}$"
+        keyboard.add(InlineKeyboardButton(text=btn_text, callback_data=f"view_strat:{s_id}"))
+        
+    return keyboard
+
+def build_portfolio_main_text(portfolios, stats):
+    text = "💼 <b>لوحة القيادة | المحفظة الاستثمارية</b>\n"
+    text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    if not portfolios:
+        return text + "📭 <i>لا توجد محافظ أو إستراتيجيات نشطة حالياً...</i>"
+        
+    total_balance = sum(float(p.get('current_balance', 0)) for p in portfolios)
+    text += f"💰 <b>إجمالي رصيد المحافظ:</b> <code>{total_balance:.2f}$</code>\n"
+    text += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n\n"
+    
+    for p in portfolios:
+        s_id = p['strategy_id']
+        s_name = p['strategy_name']
+        prev_bal = float(p.get('previous_balance', 0))
+        curr_bal = float(p.get('current_balance', 0))
+        pnl_perc = float(p.get('pnl_percentage', 0))
+        
+        # إحصائيات الصفقات
+        s_stats = stats.get(s_id, {'wins': 0, 'losses': 0})
+        wins = s_stats['wins']
+        losses = s_stats['losses']
+        total_trades = wins + losses
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+        
+        sign = "+" if pnl_perc > 0 else ""
+        icon = "🟢" if pnl_perc > 0 else ("🔴" if pnl_perc < 0 else "⚪")
+        
+        text += f"🔹 <b>إستراتيجية:</b> {s_name} <code>[رقم: {s_id}]</code>\n"
+        text += f"💵 <b>الرصيد الأساسي:</b> <code>{prev_bal:.2f}$</code>\n"
+        text += f"💳 <b>الرصيد الحالي:</b> <code>{curr_bal:.2f}$</code>\n"
+        text += f"📈 <b>معدل النمو:</b> <code>{sign}{pnl_perc:.2f}% {icon}</code>\n"
+        text += f"🏆 <b>الناجحة:</b> <code>{wins}</code> | 💔 <b>الفاشلة:</b> <code>{losses}</code> | 🎯 <b>دقة:</b> <code>{win_rate:.1f}%</code>\n"
+        text += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        
+    text += "\n👇 <i>انقر على زر الإستراتيجية بالأسفل لعرض تفاصيل صفقاتها:</i>"
+    return text
+
+def build_strategy_details_text(portfolio, wins, losses):
+    s_name = portfolio['strategy_name']
+    s_id = portfolio['strategy_id']
+    curr_bal = float(portfolio.get('current_balance', 0))
+    
+    text = f"🔎 <b>تحليل إستراتيجية | {s_name}</b>\n"
+    text += f"🔢 <b>الرقم:</b> <code>{s_id}</code> | 💰 <b>الرصيد:</b> <code>{curr_bal:.2f}$</code>\n"
+    text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # قسم الصفقات الناجحة (مرتبة من الأكبر للأصغر)
+    text += "🏆 <b>أكبر الصفقات الناجحة:</b>\n"
+    if wins:
+        for i, t in enumerate(wins, 1):
+            coin = t['coin_name']
+            pnl = float(t.get('realized_pnl', 0))
+            perc = float(t.get('pnl_percentage', 0))
+            text += f"  {i}. #{coin} ➔ 🟢 ربح: <code>+{pnl:.2f}$</code> ({perc:.2f}%)\n"
+    else:
+        text += "  <i>لا توجد صفقات ناجحة مغلقة بعد.</i>\n"
+        
+    text += "\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n\n"
+    
+    # قسم الصفقات الفاشلة (مرتبة من الأكبر للأصغر)
+    text += "💔 <b>أكبر الصفقات الفاشلة:</b>\n"
+    if losses:
+        for i, t in enumerate(losses, 1):
+            coin = t['coin_name']
+            pnl = float(t.get('realized_pnl', 0))
+            perc = float(t.get('pnl_percentage', 0))
+            text += f"  {i}. #{coin} ➔ 🔴 خسارة: <code>{pnl:.2f}$</code> ({perc:.2f}%)\n"
+    else:
+        text += "  <i>لا توجد صفقات خاسرة (ممتاز!).</i>\n"
+        
+    return text
+
+async def fetch_portfolio_data(supabase, user_id):
+    # جلب جميع محافظ المستخدم (بناءً على جدول portfolio)
+    # ملاحظة: افترضنا أن player_name يحمل معرف المستخدم (user_id) كنص، عدلها إذا كانت مختلفة لديك.
+    res_port = supabase.table("portfolio").select("*").eq("player_name", str(user_id)).order("current_balance", desc=True).execute()
+    portfolios = res_port.data
+
+    # جلب الصفقات المغلقة لحساب عدد الناجحة والفاشلة لكل إستراتيجية
+    res_trades = supabase.table("active_trades").select("strategy_id, realized_pnl").eq("user_id", user_id).eq("status", "مغلقة").execute()
+    
+    # حساب الإحصائيات (تجميع الصفقات بالبايثون لتقليل الطلبات على قاعدة البيانات)
+    stats = {}
+    for t in res_trades.data:
+        sid = t.get('strategy_id')
+        if not sid:
+            continue
+        if sid not in stats:
+            stats[sid] = {'wins': 0, 'losses': 0}
+            
+        pnl = float(t.get('realized_pnl', 0))
+        if pnl > 0:
+            stats[sid]['wins'] += 1
+        else:
+            stats[sid]['losses'] += 1
+
+    return portfolios, stats
+
+async def fetch_strategy_top_trades(supabase, user_id, strategy_id, limit=5):
+    # جلب أعلى الصفقات الناجحة (ترتيب تنازلي للربح)
+    res_wins = supabase.table("active_trades").select("*") \
+        .eq("user_id", user_id).eq("strategy_id", strategy_id).eq("status", "مغلقة").gt("realized_pnl", 0) \
+        .order("realized_pnl", desc=True).limit(limit).execute()
+        
+    # جلب أكبر الصفقات الفاشلة (ترتيب تصاعدي، لأن الخسارة بالسالب، فالرقم الأصغر رياضياً هو الخسارة الأكبر)
+    res_losses = supabase.table("active_trades").select("*") \
+        .eq("user_id", user_id).eq("strategy_id", strategy_id).eq("status", "مغلقة").lte("realized_pnl", 0) \
+        .order("realized_pnl", desc=False).limit(limit).execute()
+
+    return res_wins.data, res_losses.data
 # --- قسم دوال الكيبورد ---
 # ==========================================
 # 3. قوالب واجهات المستخدم (Secured Keyboards)
@@ -455,105 +580,71 @@ async def analytics_dashboard_handler(message: types.Message):
     await message.answer(text, reply_markup=kb_analytics, parse_mode="HTML")
 
 
-
-@dp.message_handler(Text(equals=["محفظتي", "المحفظة"], ignore_case=True), state="*")
-async def message_wallet_view(message: types.Message):
-    await process_wallet_logic(message.from_user.id, message.from_user.first_name, message=message)
-    
-
-async def process_wallet_logic(user_id, first_name, message=None, callback=None):
+# ---------------- هاندلر استدعاء المحفظة ----------------
+@dp.message_handler(Text(equals=["محفظتي", "حسابي", "المحفظة", "محفظة"], ignore_case=True), state="*")
+async def listener_portfolio(message: types.Message):
+    user_id = int(message.from_user.id)
     try:
-        # 1. جلب بيانات المستخدم
-        res = supabase.table("users_global_profile").select("*").eq("user_id", user_id).execute()
-        data = res.data[0] if res.data else None
-
-        if not data:
-            return # التعامل مع الخطأ كما في كودك السابق
-
-        bank_bal = float(data.get('bank_balance', 0.0))    # الكاش المتاح حالياً
-        wallet_bal = float(data.get('wallet', 0.0))        # المحفظة الرئيسية (خارج التداول)
-        debt = float(data.get('debt_balance', 0.0))
-        flag = data.get('country_flag', '🇾🇪')
-
-        # 2. تحليل الصفقات النشطة
-        trades_res = supabase.table("active_trades").select("*").eq("user_id", user_id).eq("is_active", True).execute()
-        active_trades = trades_res.data if trades_res.data else []
+        # جلب البيانات
+        portfolios, stats = await fetch_portfolio_data(supabase, user_id)
         
-        long_count = 0
-        short_count = 0
-        total_locked_margin = 0.0  # المبالغ المستخدمة في الصفقات
-        unrealized_pnl = 0.0       # الأرباح والخسائر العائمة
+        # بناء النص والأزرار
+        text = build_portfolio_main_text(portfolios, stats)
+        keyboard = get_portfolio_keyboard(portfolios)
+        
+        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Portfolio Error: {e}")
+        await message.answer("⚠️ عذراً، حدث خطأ أثناء جلب بيانات المحفظة.")
 
-        for trade in active_trades:
-            if trade['side'] == 'LONG': long_count += 1
-            else: short_count += 1
+# ---------------- هاندلر الضغط على تفاصيل إستراتيجية معينة ----------------
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('view_strat:'), state="*")
+async def view_strategy_details_callback(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    strategy_id = int(callback_query.data.split(':')[1])
+    
+    try:
+        # 1. جلب بيانات المحفظة المحددة للحصول على الإسم والرصيد
+        res_port = supabase.table("portfolio").select("*").eq("player_name", str(user_id)).eq("strategy_id", strategy_id).execute()
+        if not res_port.data:
+            return await callback_query.answer("⚠️ لم يتم العثور على الإستراتيجية.", show_alert=True)
             
-            margin = float(trade['margin'])
-            total_locked_margin += margin
-            
-            # حساب الـ PnL (نفس منطقك السابق)
-            symbol = trade['symbol']
-            coin_res = supabase.table("crypto_market_simulation").select("current_price").eq("symbol", symbol).execute()
-            if coin_res.data:
-                current_price = float(coin_res.data[0]['current_price'])
-                entry = float(trade['entry_price'])
-                lev = float(trade['leverage'])
-                if entry > 0:
-                    pnl_pct = (current_price - entry) / entry if trade['side'] == 'LONG' else (entry - current_price) / entry
-                    unrealized_pnl += (margin * pnl_pct * lev)
-
-        # 🎯 3. الحسبة اللي طلبتها يا أثر:
-        # إجمالي رصيد التداول (الرأس مال الكلي) = الكاش المتاح + المبالغ المستخدمة
-        total_trading_balance = bank_bal + total_locked_margin
+        portfolio = res_port.data[0]
         
-        # صافي القيمة (السيولة الفعلية مع الأرباح)
-        equity = total_trading_balance + unrealized_pnl
+        # 2. جلب أفضل وأسوأ الصفقات (أكبر 5 ناجحة و 5 فاشلة)
+        wins, losses = await fetch_strategy_top_trades(supabase, user_id, strategy_id, limit=5)
         
-        pnl_color = "🟢" if unrealized_pnl >= 0 else "🔴"
-
-        # 4. التنسيق بستايل بينانس (إظهار الجمع)
-        text = (
-            f"🏦 | <b>مـركـز إدارة الأصـول</b>\n"
-            f"   ━━━━━━━━━━━━━━━━━━\n"
-            f"👤 الـمـستخدم: <b>{first_name}</b> {flag}\n\n"
-            f"💳 <b>إجمالي الرصيد (Total):</b> <code>{total_trading_balance:,.2f} $</code>\n"
-            f"   <i>(كاش: {bank_bal:,.2f} + مستخدم: {total_locked_margin:,.2f})</i>\n\n"
-            f"💎 <b>صافي القيمة (Equity):</b> <code>{equity:,.2f} $</code>\n"
-            f"💰 <b>المحفظة الفورية:</b> <code>{wallet_bal:,.2f} $</code>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"📊 <b>إحصائيات المـراكز:</b>\n"
-            f"🟢 شراء: <b>{long_count}</b> | 🔴 بيع: <b>{short_count}</b>\n"
-            f"{pnl_color} <b>الأرباح العائمة:</b> <b>{unrealized_pnl:+.2f} $</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
+        # 3. بناء النص
+        text = build_strategy_details_text(portfolio, wins, losses)
+        
+        # 4. زر الرجوع
+        back_kb = InlineKeyboardMarkup().add(
+            InlineKeyboardButton("🔙 رجوع للمحفظة", callback_data="back_to_portfolio")
         )
         
-        if debt > 0:
-            # إذا وصلت السيولة (Equity) للصفر، الديون ستظل موجودة لكن الحساب سيتجمد
-            text += f"⚠️ <b>الـديون الـمستحقة:</b> <code>{debt:,.2f} $</code>\n"
-        else:
-            text += "✅ <b>حالة الائتمان:</b> ممتاز (لا يوجد دين)\n"
+        await callback_query.message.edit_text(text, reply_markup=back_kb, parse_mode="HTML")
+        await callback_query.answer()
         
-        text += "   ━━━━━━━━━━━━━━━━━━"
-
-        # 6. استدعاء الكيبورد وتحديث الواجهة
-        # نمرر قيمة debt للكيبورد لكي تظهر أزرار "تسديد الدين" إذا كان هناك دين
-        markup = get_wallet_keyboard(user_id, debt)
-
-        if message:
-            await message.answer(text, reply_markup=markup, parse_mode="HTML")
-        elif callback:
-            # تعديل النص في الرسالة الحالية (تحديث لحظي للسعر)
-            try:
-                await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
-            except Exception:
-                # لتجنب خطأ "Message is not modified" إذا لم يتغير السعر
-                pass
-
     except Exception as e:
-        import logging
-        logging.error(f"❌ Wallet Error for user {user_id}: {e}")
-        if message: 
-            await message.answer("⚠️ فشل في تحديث بيانات المحفظة.")
+        logging.error(f"View Strategy Error: {e}")
+        await callback_query.answer("⚠️ حدث خطأ أثناء جلب التفاصيل.", show_alert=True)
+
+# ---------------- هاندلر زر الرجوع لقائمة المحافظ ----------------
+@dp.callback_query_handler(lambda c: c.data == "back_to_portfolio", state="*")
+async def back_to_portfolio_callback(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    try:
+        portfolios, stats = await fetch_portfolio_data(supabase, user_id)
+        
+        text = build_portfolio_main_text(portfolios, stats)
+        keyboard = get_portfolio_keyboard(portfolios)
+        
+        await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await callback_query.answer()
+    except Exception as e:
+        logging.error(f"Back Portfolio Error: {e}")
+        await callback_query.answer("⚠️ حدث خطأ أثناء التحديث.", show_alert=True)
+
 
 # ==========================================
 # --- [ مستمع السوق ] ---
