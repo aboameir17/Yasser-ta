@@ -139,7 +139,7 @@ def build_portfolio_view(portfolios, stats, page=0, filter_type="all"):
             filtered.append(p)
         
     # 2. نظام الصفحات (الباجينيشن)
-    items_per_page = 3
+    items_per_page = 6
     total_pages = math.ceil(len(filtered) / items_per_page) if filtered else 1
     page = max(0, min(page, total_pages - 1))
     
@@ -156,7 +156,7 @@ def build_portfolio_view(portfolios, stats, page=0, filter_type="all"):
     if not current_items:
         text += "📭 <i>لا توجد محافظ مطابقة لهذا الفلتر...</i>\n"
     else:
-        emojis = ["1️⃣", "2️⃣", "3️⃣"]
+        emojis = ["1️⃣", "2️⃣", "3️⃣", "⁦4️⃣⁩", "⁦5️⃣⁩", "⁦6️⃣⁩"]
         for i, p in enumerate(current_items):
             s_name = p['strategy_name']
             s_id = p.get('strategy_id', 'N/A') # إضافة رقم الإستراتيجية
@@ -207,7 +207,7 @@ def build_portfolio_view(portfolios, stats, page=0, filter_type="all"):
 
 
 def build_trades_view(trades, strategy_id, trade_type="w", page=0):
-    items_per_page = 5
+    items_per_page = 20
     total_pages = math.ceil(len(trades) / items_per_page) if trades else 1
     page = max(0, min(page, total_pages - 1))
     
