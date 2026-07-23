@@ -113,132 +113,158 @@ def generate_candle_chart(direction):
         return "📉 ⇠ |---🟩---|\n⇠ 🚀 صعود إيجابي"
     else:
         return "📈 ⇠ |---🟥---|\n⇠ 🩸 هبوط سلبي"
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-def get_portfolio_keyboard(portfolios):
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    
+def build_portfolio_view(portfolios, stats, page=0, filter_type="all"):
+    # 1. الفرز (تصفية البيانات)
+    filtered = []
     for p in portfolios:
-        s_id = p['strategy_id']
-        s_name = p['strategy_name']
-        balance = float(p.get('current_balance', 0))
+        pnl = float(p.get('pnl_percentage', 0))
+        if filter_type == "win" and pnl > 0: filtered.append(p)
+        elif filter_type == "loss" and pnl < 0: filtered.append(p)
+        elif filter_type == "all": filtered.append(p)
         
-        # زر لكل إستراتيجية
-        btn_text = f"📊 {s_name} | الرصيد: {balance:.2f}$"
-        keyboard.add(InlineKeyboardButton(text=btn_text, callback_data=f"view_strat:{s_id}"))
-        
-    return keyboard
+    # 2. نظام الصفحات (الباجينيشن)
+    items_per_page = 3
+    total_pages = math.ceil(len(filtered) / items_per_page) if filtered else 1
+    page = max(0, min(page, total_pages - 1))
+    
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_items = filtered[start_idx:end_idx]
 
-def build_portfolio_main_text(portfolios, stats):
+    # 3. بناء النص
+    filter_names = {"all": "🌐 الكل", "win": "🟢 الناجحة", "loss": "🔴 الفاشلة"}
     text = "💼 <b>لوحة القيادة | المحفظة الاستثمارية</b>\n"
+    text += f"🔎 <b>الفلتر الحالي:</b> {filter_names[filter_type]}\n"
     text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
     
-    if not portfolios:
-        return text + "📭 <i>لا توجد محافظ أو إستراتيجيات نشطة حالياً...</i>"
-        
-    total_balance = sum(float(p.get('current_balance', 0)) for p in portfolios)
-    text += f"💰 <b>إجمالي رصيد المحافظ:</b> <code>{total_balance:.2f}$</code>\n"
-    text += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n\n"
-    
-    for p in portfolios:
-        s_id = p['strategy_id']
-        s_name = p['strategy_name']
-        prev_bal = float(p.get('previous_balance', 0))
-        curr_bal = float(p.get('current_balance', 0))
-        pnl_perc = float(p.get('pnl_percentage', 0))
-        
-        # إحصائيات الصفقات
-        s_stats = stats.get(s_id, {'wins': 0, 'losses': 0})
-        wins = s_stats['wins']
-        losses = s_stats['losses']
-        total_trades = wins + losses
-        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
-        
-        sign = "+" if pnl_perc > 0 else ""
-        icon = "🟢" if pnl_perc > 0 else ("🔴" if pnl_perc < 0 else "⚪")
-        
-        text += f"🔹 <b>إستراتيجية:</b> {s_name} <code>[رقم: {s_id}]</code>\n"
-        text += f"💵 <b>الرصيد الأساسي:</b> <code>{prev_bal:.2f}$</code>\n"
-        text += f"💳 <b>الرصيد الحالي:</b> <code>{curr_bal:.2f}$</code>\n"
-        text += f"📈 <b>معدل النمو:</b> <code>{sign}{pnl_perc:.2f}% {icon}</code>\n"
-        text += f"🏆 <b>الناجحة:</b> <code>{wins}</code> | 💔 <b>الفاشلة:</b> <code>{losses}</code> | 🎯 <b>دقة:</b> <code>{win_rate:.1f}%</code>\n"
-        text += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        
-    text += "\n👇 <i>انقر على زر الإستراتيجية بالأسفل لعرض تفاصيل صفقاتها:</i>"
-    return text
+    if not current_items:
+        text += "📭 <i>لا توجد محافظ مطابقة لهذا الفلتر...</i>\n"
+    else:
+        # أرقام تعبيرية لربطها بالأزرار
+        emojis = ["1️⃣", "2️⃣", "3️⃣"]
+        for i, p in enumerate(current_items):
+            s_name = p['strategy_name']
+            curr_bal = float(p.get('current_balance', 0))
+            pnl_perc = float(p.get('pnl_percentage', 0))
+            s_stats = stats.get(p['strategy_id'], {'wins': 0, 'losses': 0})
+            
+            icon = "🟢" if pnl_perc > 0 else ("🔴" if pnl_perc < 0 else "⚪")
+            
+            text += f"{emojis[i]} <b>{s_name}</b>\n"
+            text += f"   💵 <b>الرصيد:</b> <code>{curr_bal:.2f}$</code> | 📈 <b>النمو:</b> <code>{pnl_perc:.2f}% {icon}</code>\n"
+            text += f"   🏆 <b>الناجحة:</b> {s_stats['wins']} | 💔 <b>الفاشلة:</b> {s_stats['losses']}\n"
+            text += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
 
-def build_strategy_details_text(portfolio, wins, losses):
-    s_name = portfolio['strategy_name']
-    s_id = portfolio['strategy_id']
-    curr_bal = float(portfolio.get('current_balance', 0))
+    # 4. بناء الأزرار (لوحة التحكم)
+    kb = InlineKeyboardMarkup(row_width=3)
     
-    text = f"🔎 <b>تحليل إستراتيجية | {s_name}</b>\n"
-    text += f"🔢 <b>الرقم:</b> <code>{s_id}</code> | 💰 <b>الرصيد:</b> <code>{curr_bal:.2f}$</code>\n"
+    # أزرار الإستراتيجيات (قصيرة جداً: 1️⃣ التفاصيل)
+    strat_buttons = []
+    for i, p in enumerate(current_items):
+        strat_buttons.append(InlineKeyboardButton(f"{emojis[i]} التفاصيل", callback_data=f"si:{p['strategy_id']}"))
+    if strat_buttons:
+        kb.add(*strat_buttons)
+
+    # أزرار الفلترة
+    kb.row(
+        InlineKeyboardButton("🟢 الناجحة", callback_data=f"p:0:win"),
+        InlineKeyboardButton("🌐 الكل", callback_data=f"p:0:all"),
+        InlineKeyboardButton("🔴 الفاشلة", callback_data=f"p:0:loss")
+    )
+    
+    # أزرار التنقل والتحديث
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"p:{page-1}:{filter_type}"))
+    
+    nav_buttons.append(InlineKeyboardButton("🔄 تحديث", callback_data=f"p:{page}:{filter_type}"))
+    
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("التالي ➡️", callback_data=f"p:{page+1}:{filter_type}"))
+        
+    kb.row(*nav_buttons)
+    
+    return text, kb
+
+def build_trades_view(trades, strategy_id, trade_type="w", page=0):
+    items_per_page = 5
+    total_pages = math.ceil(len(trades) / items_per_page) if trades else 1
+    page = max(0, min(page, total_pages - 1))
+    
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    current_trades = trades[start_idx:end_idx]
+
+    type_name = "🟢 الصفقات الناجحة" if trade_type == "w" else "🔴 الصفقات الفاشلة"
+    text = f"🗂 <b>سجل الصفقات | {type_name}</b>\n"
+    text += f"🔢 <b>صفحة:</b> {page+1}/{total_pages}\n"
     text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
     
-    # قسم الصفقات الناجحة (مرتبة من الأكبر للأصغر)
-    text += "🏆 <b>أكبر الصفقات الناجحة:</b>\n"
-    if wins:
-        for i, t in enumerate(wins, 1):
+    if not current_trades:
+        text += "<i>لا توجد صفقات من هذا النوع مسجلة بعد...</i>\n"
+    else:
+        for i, t in enumerate(current_trades, start_idx + 1):
             coin = t['coin_name']
             pnl = float(t.get('realized_pnl', 0))
             perc = float(t.get('pnl_percentage', 0))
-            text += f"  {i}. #{coin} ➔ 🟢 ربح: <code>+{pnl:.2f}$</code> ({perc:.2f}%)\n"
-    else:
-        text += "  <i>لا توجد صفقات ناجحة مغلقة بعد.</i>\n"
-        
-    text += "\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n\n"
-    
-    # قسم الصفقات الفاشلة (مرتبة من الأكبر للأصغر)
-    text += "💔 <b>أكبر الصفقات الفاشلة:</b>\n"
-    if losses:
-        for i, t in enumerate(losses, 1):
-            coin = t['coin_name']
-            pnl = float(t.get('realized_pnl', 0))
-            perc = float(t.get('pnl_percentage', 0))
-            text += f"  {i}. #{coin} ➔ 🔴 خسارة: <code>{pnl:.2f}$</code> ({perc:.2f}%)\n"
-    else:
-        text += "  <i>لا توجد صفقات خاسرة (ممتاز!).</i>\n"
-        
-    return text
+            sign = "+" if pnl > 0 else ""
+            text += f"<b>{i}.</b> #{coin} ➔ <code>{sign}{pnl:.2f}$</code> ({perc:.2f}%)\n"
 
-async def fetch_portfolio_data(supabase, user_id):
-    # جلب جميع محافظ المستخدم (بناءً على جدول portfolio)
-    # ملاحظة: افترضنا أن player_name يحمل معرف المستخدم (user_id) كنص، عدلها إذا كانت مختلفة لديك.
+    # بناء الأزرار
+    kb = InlineKeyboardMarkup(row_width=2)
+    
+    # فلتر الصفقات
+    kb.row(
+        InlineKeyboardButton("🟢 الناجحة", callback_data=f"tr:{strategy_id}:w:0"),
+        InlineKeyboardButton("🔴 الخاسرة", callback_data=f"tr:{strategy_id}:l:0")
+    )
+    
+    # التنقل
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"tr:{strategy_id}:{trade_type}:{page-1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("التالي ➡️", callback_data=f"tr:{strategy_id}:{trade_type}:{page+1}"))
+    if nav_buttons:
+        kb.row(*nav_buttons)
+        
+    # رجوع
+    kb.add(InlineKeyboardButton("🔙 رجوع للوحة القيادة", callback_data="p:0:all"))
+    return text, kb
+
+import math
+
+async def get_dashboard_data(supabase, user_id):
+    """جلب بيانات المحافظ والإحصائيات مرة واحدة لتسريع الأداء"""
     res_port = supabase.table("portfolio").select("*").eq("player_name", str(user_id)).order("current_balance", desc=True).execute()
     portfolios = res_port.data
 
-    # جلب الصفقات المغلقة لحساب عدد الناجحة والفاشلة لكل إستراتيجية
     res_trades = supabase.table("active_trades").select("strategy_id, realized_pnl").eq("user_id", user_id).eq("status", "مغلقة").execute()
     
-    # حساب الإحصائيات (تجميع الصفقات بالبايثون لتقليل الطلبات على قاعدة البيانات)
     stats = {}
     for t in res_trades.data:
         sid = t.get('strategy_id')
-        if not sid:
-            continue
-        if sid not in stats:
-            stats[sid] = {'wins': 0, 'losses': 0}
-            
+        if not sid: continue
+        if sid not in stats: stats[sid] = {'wins': 0, 'losses': 0}
+        
         pnl = float(t.get('realized_pnl', 0))
-        if pnl > 0:
-            stats[sid]['wins'] += 1
-        else:
-            stats[sid]['losses'] += 1
+        if pnl > 0: stats[sid]['wins'] += 1
+        else: stats[sid]['losses'] += 1
 
     return portfolios, stats
 
-async def fetch_strategy_top_trades(supabase, user_id, strategy_id, limit=5):
-    # جلب أعلى الصفقات الناجحة (ترتيب تنازلي للربح)
-    res_wins = supabase.table("active_trades").select("*") \
-        .eq("user_id", user_id).eq("strategy_id", strategy_id).eq("status", "مغلقة").gt("realized_pnl", 0) \
-        .order("realized_pnl", desc=True).limit(limit).execute()
+async def get_strategy_trades(supabase, user_id, strategy_id, trade_type="w"):
+    """جلب صفقات إستراتيجية معينة (w=ناجحة, l=خاسرة)"""
+    query = supabase.table("active_trades").select("*").eq("user_id", user_id).eq("strategy_id", strategy_id).eq("status", "مغلقة")
+    
+    if trade_type == "w":
+        res = query.gt("realized_pnl", 0).order("realized_pnl", desc=True).execute()
+    else:
+        res = query.lte("realized_pnl", 0).order("realized_pnl", desc=False).execute()
         
-    # جلب أكبر الصفقات الفاشلة (ترتيب تصاعدي، لأن الخسارة بالسالب، فالرقم الأصغر رياضياً هو الخسارة الأكبر)
-    res_losses = supabase.table("active_trades").select("*") \
-        .eq("user_id", user_id).eq("strategy_id", strategy_id).eq("status", "مغلقة").lte("realized_pnl", 0) \
-        .order("realized_pnl", desc=False).limit(limit).execute()
-
-    return res_wins.data, res_losses.data
+    return res.data
 # --- قسم دوال الكيبورد ---
 # ==========================================
 # 3. قوالب واجهات المستخدم (Secured Keyboards)
@@ -579,72 +605,60 @@ async def analytics_dashboard_handler(message: types.Message):
     )
     await message.answer(text, reply_markup=kb_analytics, parse_mode="HTML")
 
+# 1. أمر استدعاء المحفظة لأول مرة
+@dp.message_handler(Text(equals=["محفظتي", "حسابي", "المحفظة"], ignore_case=True), state="*")
+async def cmd_portfolio(message: types.Message):
+    user_id = message.from_user.id
+    portfolios, stats = await get_dashboard_data(supabase, user_id)
+    text, kb = build_portfolio_view(portfolios, stats, page=0, filter_type="all")
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-# ---------------- هاندلر استدعاء المحفظة ----------------
-@dp.message_handler(Text(equals=["محفظتي", "حسابي", "المحفظة", "محفظة"], ignore_case=True), state="*")
-async def listener_portfolio(message: types.Message):
-    user_id = int(message.from_user.id)
-    try:
-        # جلب البيانات
-        portfolios, stats = await fetch_portfolio_data(supabase, user_id)
-        
-        # بناء النص والأزرار
-        text = build_portfolio_main_text(portfolios, stats)
-        keyboard = get_portfolio_keyboard(portfolios)
-        
-        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
-    except Exception as e:
-        logging.error(f"Portfolio Error: {e}")
-        await message.answer("⚠️ عذراً، حدث خطأ أثناء جلب بيانات المحفظة.")
-
-# ---------------- هاندلر الضغط على تفاصيل إستراتيجية معينة ----------------
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('view_strat:'), state="*")
-async def view_strategy_details_callback(callback_query: types.CallbackQuery):
+# 2. هاندلر لوحة القيادة (تحديث، التالي، السابق، فلترة المحافظ)
+# الصيغة: p:{page}:{filter_type}
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('p:'), state="*")
+async def cq_portfolio_dashboard(callback_query: types.CallbackQuery):
+    _, page_str, filter_type = callback_query.data.split(':')
     user_id = callback_query.from_user.id
+    
+    portfolios, stats = await get_dashboard_data(supabase, user_id)
+    text, kb = build_portfolio_view(portfolios, stats, page=int(page_str), filter_type=filter_type)
+    
+    # تجنب خطأ "الرسالة لم تتغير" إذا ضغط المستخدم تحديث ولم يتغير شيء
+    try:
+        await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        await callback_query.answer("🔄 تم تحديث اللوحة!")
+    except:
+        await callback_query.answer("✅ البيانات محدثة بالفعل.")
+
+# 3. هاندلر الضغط على زر "التفاصيل" لإستراتيجية معينة (الدخول لصفقاتها)
+# الصيغة: si:{strategy_id} -> افتراضياً نعرض الصفقات الناجحة الصفحة 0
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('si:'), state="*")
+async def cq_strategy_details(callback_query: types.CallbackQuery):
     strategy_id = int(callback_query.data.split(':')[1])
+    user_id = callback_query.from_user.id
+    
+    # نجلب الصفقات الناجحة كبداية
+    trades = await get_strategy_trades(supabase, user_id, strategy_id, trade_type="w")
+    text, kb = build_trades_view(trades, strategy_id, trade_type="w", page=0)
+    
+    await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback_query.answer()
+
+# 4. هاندلر تصفح الصفقات (التالي، السابق، ناجحة، خاسرة)
+# الصيغة: tr:{strategy_id}:{trade_type}:{page}
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('tr:'), state="*")
+async def cq_trades_pagination(callback_query: types.CallbackQuery):
+    _, strategy_id, trade_type, page_str = callback_query.data.split(':')
+    user_id = callback_query.from_user.id
+    
+    trades = await get_strategy_trades(supabase, user_id, int(strategy_id), trade_type=trade_type)
+    text, kb = build_trades_view(trades, int(strategy_id), trade_type=trade_type, page=int(page_str))
     
     try:
-        # 1. جلب بيانات المحفظة المحددة للحصول على الإسم والرصيد
-        res_port = supabase.table("portfolio").select("*").eq("player_name", str(user_id)).eq("strategy_id", strategy_id).execute()
-        if not res_port.data:
-            return await callback_query.answer("⚠️ لم يتم العثور على الإستراتيجية.", show_alert=True)
-            
-        portfolio = res_port.data[0]
-        
-        # 2. جلب أفضل وأسوأ الصفقات (أكبر 5 ناجحة و 5 فاشلة)
-        wins, losses = await fetch_strategy_top_trades(supabase, user_id, strategy_id, limit=5)
-        
-        # 3. بناء النص
-        text = build_strategy_details_text(portfolio, wins, losses)
-        
-        # 4. زر الرجوع
-        back_kb = InlineKeyboardMarkup().add(
-            InlineKeyboardButton("🔙 رجوع للمحفظة", callback_data="back_to_portfolio")
-        )
-        
-        await callback_query.message.edit_text(text, reply_markup=back_kb, parse_mode="HTML")
+        await callback_query.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
         await callback_query.answer()
-        
-    except Exception as e:
-        logging.error(f"View Strategy Error: {e}")
-        await callback_query.answer("⚠️ حدث خطأ أثناء جلب التفاصيل.", show_alert=True)
-
-# ---------------- هاندلر زر الرجوع لقائمة المحافظ ----------------
-@dp.callback_query_handler(lambda c: c.data == "back_to_portfolio", state="*")
-async def back_to_portfolio_callback(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    try:
-        portfolios, stats = await fetch_portfolio_data(supabase, user_id)
-        
-        text = build_portfolio_main_text(portfolios, stats)
-        keyboard = get_portfolio_keyboard(portfolios)
-        
-        await callback_query.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    except:
         await callback_query.answer()
-    except Exception as e:
-        logging.error(f"Back Portfolio Error: {e}")
-        await callback_query.answer("⚠️ حدث خطأ أثناء التحديث.", show_alert=True)
-
 
 # ==========================================
 # --- [ مستمع السوق ] ---
