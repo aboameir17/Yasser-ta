@@ -2910,9 +2910,10 @@ async def update_crypto_market_data():
             
             top_coins.append(c)
         
-        top_coins = sorted(top_coins, key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)[:100]
+        top_coins = sorted(top_coins, key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)[:200]
         
-        timeframes = ['5m', '15m', '1h', '2h', '4h']
+        # تم تحديد الفريمات المطلوبة فقط لتوفير الموارد وتسريع الجلب
+        timeframes = ['15m', '1h', '2h', '4h']
         final_records = []
 
         for coin in top_coins:
@@ -2936,6 +2937,7 @@ async def update_crypto_market_data():
                 except Exception as e:
                     logging.warning(f"⚠️ فشل جلب عمق السوق لـ {symbol}: {e}")
 
+                # إعداد السجل الأساسي (المشترك)
                 record = {
                     "symbol": symbol,
                     "name": symbol.replace("USDT", ""),
@@ -2969,9 +2971,57 @@ async def update_crypto_market_data():
                         closes = df_tf['close'].tolist()
                         volumes = df_tf['volume'].tolist()
                         taker_buy_vols = [float(k[9]) for k in results[i]]
-                        
-                        # حساب بصمات الحيتان (Whale Net Flow) حصرياً لفريم الساعة
-                        if tf == '1h':
+
+                        # ==========================================
+                        # 🟢 فريم 15 دقيقة (مؤشرات السكالبينج والطرد)
+                        # ==========================================
+                        if tf == '15m':
+                            upper, mid, lower = calculate_bollinger(closes)
+                            bbw_val = (upper - lower) / mid if mid > 0 else 0
+                            macd_data = calculate_macd_values(closes)
+                            rsi_series = calculate_rsi(closes)
+                            kc_up, kc_mid, kc_low = calculate_keltner_channels(highs, lows, closes)
+                            stoch_k, stoch_d = calculate_stochastic(highs, lows, closes)
+                            obv_val = calculate_obv(closes, volumes)
+                            obv_prev_val = calculate_obv(closes[:-1], volumes[:-1]) if len(closes) > 1 else 0.0
+                            supertrend, psar = calculate_supertrend_psar(df_tf)
+                            vwap_val, _ = calculate_vwap_and_distance(highs, lows, closes, volumes, closes[-1])
+
+                            record.update({
+                                "volume_15m": float(volumes[-1]),
+                                "volume_ma_15m": sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes)/len(volumes),
+                                "bbw_15m": bbw_val,
+                                "bb_upper_15m": upper,
+                                "bb_lower_15m": lower,
+                                "adx_15m": calculate_adx(highs, lows, closes),
+                                "macd_15m": macd_data['macd'],
+                                "macd_signal_15m": macd_data['signal'],
+                                "macd_hist_15m": macd_data['hist'],
+                                "ema_20_15m": calculate_ema(closes, 20),
+                                "ema_50_15m": calculate_ema(closes, 50),
+                                "ema_100_15m": calculate_ema(closes, 100),
+                                "rsi_15m": float(rsi_series.iloc[-1]) if hasattr(rsi_series, 'iloc') and len(rsi_series) > 0 else 50.0,
+                                "mfi_15m": calculate_mfi(highs, lows, closes, volumes),
+                                "supertrend_15m": supertrend,
+                                "stochastic_k_15m": stoch_k,
+                                "stochastic_d_15m": stoch_d,
+                                "obv_15m": obv_val,
+                                "obv_slope_15m": obv_val - obv_prev_val,
+                                "cmf_15m": calculate_cmf(highs, lows, closes, volumes),
+                                "williams_r_15m": calculate_williams_r(highs, lows, closes),
+                                "choppiness_index_15m": calculate_choppiness_index(highs, lows, closes),
+                                "parabolic_sar_15m": psar,
+                                "volume_delta_15m": calculate_volume_delta(taker_buy_vols, volumes),
+                                "kc_upper_15m": kc_up,
+                                "kc_lower_15m": kc_low,
+                                "vwap_15m": vwap_val
+                            })
+
+                        # ==========================================
+                        # 🔵 فريم 1 ساعة (الاتجاه العام والحيتان ومناطق القيمة)
+                        # ==========================================
+                        elif tf == '1h':
+                            # حساب بصمات الحيتان
                             point_zero_idx = len(df_tf) - 1 
                             taker_buy_ratio = 1.0
                             whale_net_flow = 0.0
@@ -2982,105 +3032,73 @@ async def update_crypto_market_data():
                                 tsv_before = total_vol_before - tbv_before 
                                 taker_buy_ratio = (tbv_before / tsv_before) if tsv_before > 0 else 1.0
                                 whale_net_flow = tbv_before - tsv_before 
-                            
+
+                            upper, mid, lower = calculate_bollinger(closes)
+                            rsi_series = calculate_rsi(closes)
+                            vwap_val, _ = calculate_vwap_and_distance(highs, lows, closes, volumes, closes[-1])
+                            kc_up, kc_mid, kc_low = calculate_keltner_channels(highs, lows, closes)
+                            supertrend, psar = calculate_supertrend_psar(df_tf)
+                            stoch_k, _ = calculate_stochastic(highs, lows, closes)
+                            obv_val = calculate_obv(closes, volumes)
+                            obv_prev_val = calculate_obv(closes[:-1], volumes[:-1]) if len(closes) > 1 else 0.0
+                            tenkan, kijun, senkou_a, senkou_b = calculate_ichimoku(highs, lows)
+                            poc_price, vah_price, val_price = calculate_volume_profile(closes, volumes)
+
                             record.update({
                                 "taker_buy_ratio_1h": float(taker_buy_ratio),
                                 "whale_net_flow_volume": float(whale_net_flow),
-                                "whale_absorption_detected": False # قيمة افتراضية للـ Boolean
+                                "whale_absorption_detected": False,
+                                "volume_1h": float(volumes[-1]),
+                                "volume_ma_1h": sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes)/len(volumes),
+                                "ema_20_1h": calculate_ema(closes, 20),
+                                "ema_200_1h": calculate_ema(closes, 200),
+                                "rsi_1h": float(rsi_series.iloc[-1]) if hasattr(rsi_series, 'iloc') and len(rsi_series) > 0 else 50.0,
+                                "adx_1h": calculate_adx(highs, lows, closes),
+                                "bb_upper_1h": upper,
+                                "bb_lower_1h": lower,
+                                "vwap_1h": vwap_val,
+                                "volume_delta_1h": calculate_volume_delta(taker_buy_vols, volumes),
+                                "williams_r_1h": calculate_williams_r(highs, lows, closes),
+                                "supertrend_1h": supertrend,
+                                "kc_upper_1h": kc_up,
+                                "kc_lower_1h": kc_low,
+                                "cmf_1h": calculate_cmf(highs, lows, closes, volumes),
+                                "stochastic_k_1h": stoch_k,
+                                "choppiness_index_1h": calculate_choppiness_index(highs, lows, closes),
+                                "obv_slope_1h": obv_val - obv_prev_val,
+                                "parabolic_sar_1h": psar,
+                                "mfi_1h": calculate_mfi(highs, lows, closes, volumes),
+                                "ichimoku_conversion_1h": tenkan,
+                                "ichimoku_base_1h": kijun,
+                                "ichimoku_cloud_top_1h": senkou_a,
+                                "ichimoku_cloud_bottom_1h": senkou_b,
+                                "value_area_high_1h": vah_price,
+                                "value_area_low_1h": val_price,
+                                "poc_price_1h": poc_price
                             })
 
-                        # حساب المؤشرات الأساسية للفريم الحالي
-                        adx_val = calculate_adx(highs, lows, closes)
-                        upper, mid, lower = calculate_bollinger(closes)
-                        bbw_value = (upper - lower) / mid if mid > 0 else 0
-                        atr_val = calculate_atr(highs, lows, closes)
-                        kc_up, kc_mid, kc_low = calculate_keltner_channels(highs, lows, closes)
-                        
-                        obv_val = calculate_obv(closes, volumes)
-                        obv_prev_val = calculate_obv(closes[:-1], volumes[:-1]) if len(closes) > 1 else 0.0
-                        v_delta = calculate_volume_delta(taker_buy_vols, volumes) 
-                        
-                        rsi_series = calculate_rsi(closes)
-                        rsi_val = float(rsi_series.iloc[-1]) if hasattr(rsi_series, 'iloc') and len(rsi_series) > 0 else 50.0
-                        
-                        macd_data = calculate_macd_values(closes)
-                        
-                        # --- حساب الموشرات ---
-                        mfi_val = calculate_mfi(highs, lows, closes, volumes)
-                        cmf_val = calculate_cmf(highs, lows, closes, volumes)
-                        vwap_val, vwap_dist = calculate_vwap_and_distance(highs, lows, closes, volumes, closes[-1])
-                        poc_price, vah_price, val_price = calculate_volume_profile(closes, volumes)
-                        
-                        stoch_k, stoch_d = calculate_stochastic(highs, lows, closes)
-                        will_r = calculate_williams_r(highs, lows, closes)
-                        chop_idx = calculate_choppiness_index(highs, lows, closes)
-                        
-                        tenkan, kijun, senkou_a, senkou_b = calculate_ichimoku(highs, lows)
-                        supertrend, psar = calculate_supertrend_psar(df_tf)
-                        frac_high, frac_low = get_last_fractals(highs, lows)
-                        linreg_val = calculate_linreg_curve(closes)
-                        # ... (الحسابات السابقة)
-                        vol_osc = calculate_volume_oscillator(volumes)
+                        # ==========================================
+                        # 🟠 فريم 2 ساعة (دعم الاتجاه والسيولة)
+                        # ==========================================
+                        elif tf == '2h':
+                            _, psar = calculate_supertrend_psar(df_tf)
+                            record.update({
+                                "volume_delta_2h": calculate_volume_delta(taker_buy_vols, volumes),
+                                "parabolic_sar_2h": psar
+                            })
 
-                        # حقن بيانات الفريم الزمني متوافقة تماماً مع أعمدة الجدول
-                        record.update({
-                            f"ema_20_{tf}": calculate_ema(closes, 20),
-                            f"ema_50_{tf}": calculate_ema(closes, 50),
-                            f"ema_100_{tf}": calculate_ema(closes, 100),
-                            f"ema_200_{tf}": calculate_ema(closes, 200),                          
-                            f"rsi_{tf}": rsi_val,
-                            f"mfi_{tf}": mfi_val,
-                            f"cmf_{tf}": cmf_val,
-                            f"vwap_{tf}": vwap_val,
-                            f"vwap_distance_pct_{tf}": vwap_dist,
-                            f"poc_price_{tf}": poc_price,
-                            f"value_area_high_{tf}": vah_price,
-                            f"value_area_low_{tf}": val_price,
-                            f"volume_oscillator_{tf}": vol_osc,
-                            f"stochastic_k_{tf}": stoch_k,
-                            f"stochastic_d_{tf}": stoch_d,
-                            f"williams_r_{tf}": will_r,
-                            f"choppiness_index_{tf}": chop_idx,                          
-                            f"ichimoku_conversion_{tf}": tenkan,
-                            f"ichimoku_base_{tf}": kijun,
-                            f"ichimoku_cloud_top_{tf}": senkou_a,
-                            f"ichimoku_cloud_bottom_{tf}": senkou_b,
-                            
-                            f"supertrend_{tf}": supertrend,
-                            f"parabolic_sar_{tf}": psar,
-                            f"last_fractal_high_{tf}": frac_high,
-                            f"last_fractal_low_{tf}": frac_low,
-                            f"lin_reg_curve_{tf}": linreg_val,
-                            
-                            f"macd_{tf}": macd_data['macd'],
-                            f"macd_signal_{tf}": macd_data['signal'],
-                            f"macd_hist_{tf}": macd_data['hist'],                            
-                            
-                            f"atr_{tf}": atr_val,
-                            f"adx_{tf}": adx_val,
-                            
-                            f"volume_{tf}": float(volumes[-1]),
-                            f"volume_ma_{tf}": sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes)/len(volumes),
-                            f"volume_delta_{tf}": v_delta,
-                            
-                            f"obv_{tf}": obv_val,
-                            f"obv_prev_{tf}": obv_prev_val,
-                            f"obv_slope_{tf}": obv_val - obv_prev_val,
-                            
-                            f"bb_upper_{tf}": upper, 
-                            f"bb_middle_{tf}": mid, 
-                            f"bb_lower_{tf}": lower,
-                            f"bbw_{tf}": bbw_value,
-                            
-                            f"kc_upper_{tf}": kc_up,
-                            f"kc_middle_{tf}": kc_mid,
-                            f"kc_lower_{tf}": kc_low
-                            # --- حقن record.update ---
-                            
-                        })                      
+                        # ==========================================
+                        # 🟣 فريم 4 ساعات (نظرة الماكرو للاتجاه)
+                        # ==========================================
+                        elif tf == '4h':
+                            vwap_val, _ = calculate_vwap_and_distance(highs, lows, closes, volumes, closes[-1])
+                            record.update({
+                                "ema_20_4h": calculate_ema(closes, 20),
+                                "vwap_4h": vwap_val
+                            })
 
                 final_records.append(record)
-                print(f"🔹 [فحص] تم تجهيز {symbol}") 
+                print(f"🔹 [فحص] تم تجهيز {symbol} بجميع الفريمات بكفاءة") 
             except Exception as e: 
                 logging.error(f"❌ خطأ في معالجة {symbol}: {e}")
                 continue
@@ -3101,8 +3119,8 @@ async def update_crypto_market_data():
                 await asyncio.sleep(1)
 
         print(f"🏁 {datetime.now().strftime('%H:%M:%S')} | انتهت دورة التحديث بالكامل.")
-
         print(f"🏁 {datetime.now().strftime('%H:%M:%S')} | انتهت مهمة السكربت، الرادار يتولى الآن.")
+
 
 async def unified_trading_system():
     """
@@ -3121,7 +3139,7 @@ async def unified_trading_system():
 
             # ⏳ العداد الزمني: انتظر دقيقة واحدة (60 ثانية) قبل بدء الدورة التالية تلقائياً
             print("🏁 اكتملت الدورة بالكامل بنجاح. العداد الزمني ينطلق الآن... انتظر 60 ثانية.")
-            await asyncio.sleep(60)  # 👈 يمكنك تعديل الـ 60 ثانية لأي وقت تراه مناسباً
+            await asyncio.sleep(5)  # 👈 يمكنك تعديل الـ 60 ثانية لأي وقت تراه مناسباً
 
         except Exception as e:
             logging.error(f"🚨 خطأ في المايسترو: {e}")
